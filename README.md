@@ -1,0 +1,65 @@
+# Wyscout Data Collector
+
+Prywatny panel Streamlit dla scoutingu FK Žalgiris Vilnius. W **Konfiguracja → Timeframe — sezon do eksportu** wybierz **previous season**, **current season** albo oba (domyślnie). Kolektor zapisuje etykietę rzeczywistego sezonu danej ligi i nigdy nie łączy rekordów zawodnika między sezonami. W menu `DISPLAY → Custom` używa `Model S, appka` dla zawodników z pola oraz `Model S, appka - GK` dla bramkarzy. Zapisany zestaw filtrów włącza się osobno.
+
+## Co działa w pierwszej wersji
+
+- **Import Excel**: wgraj oryginalne pliki XLSX. Uzupełnij ligę, rzeczywisty sezon, Timeframe i pozycję każdego pliku. Podaj opcjonalny licznik Wyscout. Wybierz **Sezon w pliku Excel**, a następnie pobierz skoroszyt z osobnym arkuszem każdej ligi i `EXPORT_LOG`. Import nie potwierdza filtrów źródłowych i nie trafia do historii eksportów automatycznych. Brak drużyny jest zgłaszany bez dopisywania danych. Powtórzone nagłówki (np. `Aerial duels per 90` w układzie GK) zostają w osobnych kolumnach.
+- **Silnik automatyzacji**: logowanie, wybór rozgrywek, sezonu, pozycji i układu, przycisk eksportu, walidacja, wznowienie oraz odświeżanie. Integracja wymaga potwierdzonego profilu zalogowanego interfejsu oraz dostępu do konta. Zrzuty ekranu potwierdzają etykiety, nie selektory DOM, rzeczywisty format pliku ani dostępność filtrów. **Nie przeprowadzono testu na koncie Wyscout.**
+- Pierwszy test przeglądarki ogranicz do jednej ligi, pozycji GK i CB oraz obu sezonów. Dopiero po porównaniu liczników i kolumn rozszerz zakres na pozostałe pozycje.
+
+## Uruchamianie
+
+**Replit:** otwórz podgląd Wyscout Data Collector. Skrypt `scripts/run-wyscout.sh` uruchamia Streamlit na przydzielonym porcie. W razie potrzeby w NixOS Playwright korzysta z Node zainstalowanego w środowisku, a Chromium z systemu.
+
+**Lokalnie** (Python 3.11+):
+
+```sh
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+python -m streamlit run app.py
+```
+
+Na obsługiwanym Linuksie użyj `python -m playwright install --with-deps chromium` przy pierwszej konfiguracji systemowej. Możesz podać istniejący plik wykonywalny w `WYSCOUT_CHROMIUM`. Na własnym komputerze ustaw `WYSCOUT_HEADED=1`, by przy rozpoznanym MFA lub CAPTCHA mieć do 4 minut na dokończenie autoryzacji w oknie Chromium. W trybie headless zadanie kończy się komunikatem; aplikacja nie omija zabezpieczeń logowania.
+
+## Dostęp do panelu i konta Wyscout
+
+Do prywatnych zadań i historii włącz logowanie OIDC Streamlit. W nieśledzonym `.streamlit/secrets.toml` (lokalnie/Replit) albo w ustawieniach Secrets Streamlit Cloud podaj konfigurację OIDC:
+
+```toml
+[auth]
+redirect_uri = "https://ADRES_PANELU/oauth2callback"
+cookie_secret = "LOSOWY_SEKRET_PODPISU"
+client_id = "ID_APLIKACJI_OIDC"
+client_secret = "SEKRET_OIDC"
+server_metadata_url = "https://ADRES_DOSTAWCY/.well-known/openid-configuration"
+```
+
+Zarejestruj dokładnie ten adres przekierowania u dostawcy. Ustaw `WYSCOUT_ALLOWED_EMAILS` jako listę zweryfikowanych adresów oddzielonych przecinkami. Dostawca musi zwracać `email` i `email_verified`. Bez konfiguracji OIDC prywatne działania i dane pozostają niedostępne; import XLSX działa tylko w sesji użytkownika i nie zapisuje plików w historii.
+
+Dodaj `WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` w Replit Secrets lub w głównej sekcji Streamlit Secrets (przed `[auth]`); nie wysyłaj ich w czacie. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
+
+## Profil interfejsu Wyscout
+
+1. Skopiuj `config/wyscout.example.json` do `config/wyscout.json` lub wskaż istniejący profil przez `WYSCOUT_ADAPTER_CONFIG`. `null` oznacza **brak potwierdzonego selektora**, a nie dowolnie odgadniętą wartość.
+2. Zweryfikuj w zwykłej sesji przeglądarki elementy logowania, przycisk `Advanced Search`, formularze, aktywne etykiety oraz dokładny licznik. Stany `results_ready` / `results_loading` muszą odróżniać nowy, gotowy wynik od wyniku poprzedniego zapytania. W `active_season` oczekiwany jest widoczny rok sezonu właściwy dla rozgrywek.
+3. Potwierdź w mapie `positions` kontrolki pozycji, stan wyboru i podsumowanie **wyłącznie jednej** pozycji głównej. `reset_filters` musi przywracać stan bez filtrów, w tym filtrów poprzednich zapytań. Zamieszczone elementy boiska na zrzutach są oznaczone numerami; nie zakładamy mapowania na kody pozycji.
+4. `competition_list_complete` można włączyć dopiero po sprawdzeniu, że selektor wskazuje wszystkie dostępne ligi (nie tylko widoczną stronę czy fragment wirtualizowanej listy). W przeciwnym razie wybierz ligę ręcznie w konfiguracji.
+5. Podział przy ≥500 wynikach jest domyślnie wyłączony. Włącz go tylko, jeśli umowa i interfejs dopuszczają takie zapytania, granice dat są włączne, a przedziały pokrywają cały wynik. Jeśli brakuje kompletnych danych, zadanie nie zapisze ich jako kompletnych.
+6. Powtórzenia sprawdzamy po zawodniku i klubie tylko w obrębie jednej ligi i rzeczywistego sezonu. `Player ID` i data urodzenia nie są wymagane. Źródłem klubu jest `Team within selected timeframe`; tylko dla `current season`, gdy nie ma tej kolumny, dopuszczamy `Team`. Świeży eksport GK z `previous season` potwierdził, że obie kolumny mogą wskazywać inne kluby; świeżego eksportu CB nie sprawdzono. W automatycznym eksporcie wymagamy klubu dla każdego wiersza i porównujemy liczbę wierszy z licznikiem Wyscout. Jeśli mimo filtra pozycji głównej klucz się powtarza, zachowujemy wszystkie wiersze i odnotowujemy to w `EXPORT_LOG`.
+
+## Dane, wznowienie i hosting
+
+- Import, konfiguracja, historia, postęp i diagnostyka są w `app.py` i `wyscout/import_panel.py`. `wyscout/wyscout_adapter.py` zawiera wszystkie interakcje z Wyscout. `excel.py`, `jobs.py`, `store.py` i `partition.py` odpowiadają za Excela, przebieg, SQLite i podział zapytań.
+- Jedna instalacja z jednym katalogiem danych wykonuje najwyżej jedno zadanie na raz. Po restarcie wybierz **Resume Download**. Wznowienie potwierdza sezon i używa zweryfikowanych, nienaruszonych części. Kolektor nigdy nie uzupełnia braków zerami ani nie zastępuje poprawnej bazy niekompletną. `Refresh Database` podmienia tylko wybrane pary ligi i sezonu, a poprzednie wersje zostają w historii.
+- Na hoście z nietrwałym systemem plików skieruj `WYSCOUT_DATA_DIR` na prywatny trwały wolumen z poprawną obsługą blokad plikowych. Alternatywnie zatrzymaj kolektor, wykonaj kopię całego tego katalogu na szyfrowany nośnik i przywróć go przed wznowieniem. Kopia musi zawierać SQLite, manifesty i pobrane pliki. Nie umieszczaj danych komercyjnych ani kopii w GitHub.
+- **Prywatny GitHub → Streamlit Community Cloud:** wejście `app.py`, wersja Pythona 3.13 (zalecana; taka jest blokada zależności Replit), zależności `requirements.txt`. Import nie potrzebuje Chromium. Do automatyzacji Playwright dystrybucja musi mieć Chromium i jego biblioteki. Na Streamlit Community Cloud nie potwierdzono niezawodności długich zadań ani trwałości plików po restarcie; nie przeznaczaj tego wariantu na produkcyjne pobieranie bez weryfikacji. Nie wdrożono oddzielnego zdalnego worker API.
+
+## Testy
+
+```sh
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Testy raportów i SQLite używają jawnie syntetycznych plików. Nie świadczą o działaniu logowania lub eksportowania na koncie Wyscout.
