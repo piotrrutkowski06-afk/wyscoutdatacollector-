@@ -1,5 +1,5 @@
 {
-  "login_url": "https://platform.wyscout.com/",
+  "login_url": "https://wyscout.hudl.com/app/",
   "competition_list_complete": false,
   "selectors": {
     "login_start": null,

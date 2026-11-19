@@ -2,6 +2,7 @@ import os
 
 import streamlit as st
 
+from wyscout.panel_auth import panel_access, panel_is_authorized
 from wyscout.settings import CollectorError, FIELD_LAYOUT, GK_LAYOUT, POSITIONS, TIMEFRAMES, Settings, adapter_file
 from wyscout.store import Store
 
@@ -17,30 +18,6 @@ def config_value(name):
         return result if isinstance(result, str) else None
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
         return None
-
-
-def access():
-    try:
-        oidc_enabled = bool(st.secrets.get('auth'))
-    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
-        oidc_enabled = False
-    if not oidc_enabled:
-        return False
-    if not st.user.is_logged_in:
-        st.info('Zaloguj się kontem zatwierdzonym przez administratora narzędzia.')
-        if st.button('Zaloguj się', type='primary'):
-            st.login()
-        st.stop()
-    allowed = {item.strip().casefold() for item in (config_value('WYSCOUT_ALLOWED_EMAILS') or '').split(',') if item.strip()}
-    email = str(st.user.get('email', '')).casefold()
-    if email not in allowed or st.user.get('email_verified') is not True:
-        st.error('To konto nie znajduje się na liście dostępu albo jego e-mail nie jest zweryfikowany.')
-        if st.button('Wyloguj się'):
-            st.logout()
-        st.stop()
-    if st.sidebar.button('Wyloguj się'):
-        st.logout()
-    return True
 
 
 def errors(action):
@@ -154,6 +131,9 @@ def configuration(store):
 
 @st.fragment(run_every='3s')
 def progress(store):
+    if not panel_is_authorized(config_value('WYSCOUT_PANEL_PASSWORD')):
+        st.rerun()
+
     from wyscout import jobs
 
     history = store.history()
@@ -186,7 +166,8 @@ def progress(store):
 def manager(store):
     st.header('Download Manager')
     if store is None:
-        st.info('Zadania Wyscout są dostępne wyłącznie dla uprawnionych użytkowników. Możesz użyć importu istniejących plików.')
+        st.info('Aby odblokować pobieranie, ustaw WYSCOUT_PANEL_PASSWORD w Secrets i zaloguj się do panelu. '
+                'Bez hasła możesz użyć importu istniejących plików.')
         return
     from wyscout import jobs
 
@@ -265,7 +246,7 @@ def history_panel(store, diagnostics=False):
 
 st.title('Wyscout Data Collector')
 st.caption('FK Žalgiris Vilnius · Narzędzie działu scoutingu')
-authorized = access()
+authorized = panel_access(config_value('WYSCOUT_PANEL_PASSWORD'))
 store = Store() if authorized else None
 st.sidebar.title('Scouting · Model S')
 page = st.sidebar.radio('Sekcje', ('Dashboard', 'Konfiguracja', 'Pobieranie', 'Historia eksportów', 'Diagnostyka', 'Import Excel'),

@@ -24,20 +24,19 @@ Na obsługiwanym Linuksie użyj `python -m playwright install --with-deps chromi
 
 ## Dostęp do panelu i konta Wyscout
 
-Do prywatnych zadań i historii włącz logowanie OIDC Streamlit. W nieśledzonym `.streamlit/secrets.toml` (lokalnie/Replit) albo w ustawieniach Secrets Streamlit Cloud podaj konfigurację OIDC:
+Na Streamlit Community Cloud otwórz **Manage app → Settings → Secrets**. Lokalnie użyj nieśledzonego pliku `.streamlit/secrets.toml`, a w Replit dodaj trzy poniższe klucze jako osobne sekrety:
 
 ```toml
-[auth]
-redirect_uri = "https://ADRES_PANELU/oauth2callback"
-cookie_secret = "LOSOWY_SEKRET_PODPISU"
-client_id = "ID_APLIKACJI_OIDC"
-client_secret = "SEKRET_OIDC"
-server_metadata_url = "https://ADRES_DOSTAWCY/.well-known/openid-configuration"
+WYSCOUT_PANEL_PASSWORD = "ODRĘBNE_LOSOWE_HASŁO_DO_PANELU"
+WYSCOUT_USERNAME = "LOGIN_DO_WYSCOUT"
+WYSCOUT_PASSWORD = "HASŁO_DO_WYSCOUT"
 ```
 
-Zarejestruj dokładnie ten adres przekierowania u dostawcy. Ustaw `WYSCOUT_ALLOWED_EMAILS` jako listę zweryfikowanych adresów oddzielonych przecinkami. Dostawca musi zwracać `email` i `email_verified`. Bez konfiguracji OIDC prywatne działania i dane pozostają niedostępne; import XLSX działa tylko w sesji użytkownika i nie zapisuje plików w historii.
+Wszystkie trzy wpisy muszą być na głównym poziomie TOML, poza sekcjami. Po aktualizacji usuń starą sekcję `[auth]` oraz `WYSCOUT_ALLOWED_EMAILS`, jeśli ich używałeś. Google Cloud nie jest potrzebny. Do panelu wybierz unikalne hasło o długości od 20 do 256 znaków, inne niż hasło do Wyscout. Możesz wygenerować je lokalnie poleceniem `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Na Community Cloud zachowaj prywatną widoczność aplikacji. Nie umieszczaj sekretów w repozytorium ani w czacie.
 
-Dodaj `WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` w Replit Secrets lub w głównej sekcji Streamlit Secrets (przed `[auth]`); nie wysyłaj ich w czacie. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
+Po zapisaniu sekretów otwórz aplikację i wpisz hasło panelu. Sesja wygasa po 8 godzinach; możesz też użyć **Wyloguj się**. Bez skonfigurowanego hasła dostępny jest tylko ręczny import XLSX, bez prywatnych zadań i historii.
+
+`WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` są używane wyłącznie przez kolektor na stronie Wyscout. Po zalogowaniu do panelu przycisk **Test Wyscout Connection** wymaga jeszcze poprawnego profilu interfejsu i działającego Chromium. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
 
 ## Profil interfejsu Wyscout
 

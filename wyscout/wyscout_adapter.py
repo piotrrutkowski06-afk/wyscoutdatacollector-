@@ -13,7 +13,7 @@ from playwright.sync_api import Error as BrowserError, sync_playwright
 
 from .settings import CollectorError, SignInRequired, adapter_file
 
-LOGIN_URL = 'https://platform.wyscout.com/'
+LOGIN_URL = 'https://wyscout.hudl.com/app/'
 RESULT_RANGE = re.compile(r'^\s*\d[\d, .\u00a0\u202f]*\s*[-–]\s*\d[\d, .\u00a0\u202f]*\s+of\s+(\d[\d, .\u00a0\u202f]*)\s*$', re.I)
 
 
