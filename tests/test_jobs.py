@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import date, timedelta
 from openpyxl import Workbook, load_workbook
 import pytest
@@ -7,6 +8,59 @@ from wyscout.excel import digest
 from wyscout.partition import partitions
 from wyscout.settings import CollectorError, Settings
 from wyscout.store import Store
+from wyscout.wyscout_adapter import load_profile
+
+
+def test_connection_uses_bundled_template_without_fetching_leagues(tmp_path, monkeypatch):
+    monkeypatch.delenv('WYSCOUT_ADAPTER_CONFIG', raising=False)
+    monkeypatch.setattr('wyscout.wyscout_adapter.adapter_file', lambda: tmp_path / 'wyscout.json')
+    store = Store(tmp_path)
+    store.remember('available_leagues', ['Test League'])
+    calls = []
+
+    @contextmanager
+    def sign_in_only(*_, profile):
+        calls.append(profile)
+        yield object()  # The probe must not call competitions().
+
+    monkeypatch.setattr(jobs, 'open_adapter', sign_in_only)
+    assert jobs.probe(store, ('test-user', 'test-only')) is True
+    assert calls[0]['selectors']['app_switcher']
+    assert calls[0]['competition_list_complete'] is False
+    assert store.preference('connection_ok') is True
+    assert store.preference('available_leagues') == ['Test League']
+    with pytest.raises(CollectorError, match='Brak profilu'):
+        load_profile()
+    monkeypatch.setenv('WYSCOUT_ADAPTER_CONFIG', str(tmp_path / 'wyscout.json'))
+    with pytest.raises(CollectorError, match='Brak profilu'):
+        jobs.probe(store, ('test-user', 'test-only'))
+    assert store.preference('connection_ok') is False
+
+
+def test_league_refresh_requires_a_confirmed_profile_and_preserves_saved_list_on_error(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    store.remember('available_leagues', ['Old League'])
+    profile = {'competition_list_complete': False}
+    monkeypatch.setattr(jobs, 'load_profile', lambda: profile)
+    monkeypatch.setattr(jobs, 'open_adapter', lambda *_a, **_kw: pytest.fail('No browser for unverified catalogue'))
+    with pytest.raises(CollectorError, match='nie potwierdza'):
+        jobs.refresh_leagues(store, ('test-user', 'test-only'))
+    assert store.preference('available_leagues') == ['Old League']
+
+    profile['competition_list_complete'] = True
+
+    class VerifiedCatalogue:
+        def competitions(self):
+            return ['New League']
+
+    @contextmanager
+    def open_catalogue(*_, profile):
+        assert profile['competition_list_complete']
+        yield VerifiedCatalogue()
+
+    monkeypatch.setattr(jobs, 'open_adapter', open_catalogue)
+    assert jobs.refresh_leagues(store, ('test-user', 'test-only')) == ['New League']
+    assert store.preference('available_leagues') == ['New League']
 
 
 def test_partition_at_boundary():

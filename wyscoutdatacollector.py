@@ -76,7 +76,7 @@ def configuration(store):
     if selection_mode == 'Wszystkie dostępne rozgrywki':
         leagues = available
         if not available:
-            st.info('Najpierw pobierz pełną listę lig przyciskiem Test Wyscout Connection.')
+            st.info('Najpierw użyj „Pobierz listę rozgrywek” w sekcji Pobieranie. Test logowania nie pobiera lig.')
         else:
             st.caption(f'Zaplanowano {len(available)} lig ze sprawdzonej listy.')
     else:
@@ -170,25 +170,44 @@ def manager(store):
                 'Bez hasła możesz użyć importu istniejących plików.')
         return
     from wyscout import jobs
+    from wyscout.wyscout_adapter import load_profile
 
-    creds = (config_value('WYSCOUT_USERNAME'), config_value('WYSCOUT_PASSWORD'))
-    ready = bool(all(creds) and adapter_file().is_file())
-    if not ready:
-        st.warning('Do połączenia potrzebne są dane w Secrets oraz zweryfikowany profil interfejsu Wyscout. Szczegóły w Diagnostyce.')
+    keys = ('WYSCOUT_USERNAME', 'WYSCOUT_PASSWORD')
+    creds = tuple(config_value(key) for key in keys)
+    missing = [key for key, value in zip(keys, creds) if not value or not value.strip()]
+    profile = errors(load_profile) if adapter_file().is_file() else None
+    if missing:
+        st.warning('Brak wpisów w Secrets: ' + ', '.join(missing) + '. Hasło do panelu nie zastępuje danych konta Wyscout.')
+    if profile is None:
+        st.info('Brak gotowego profilu eksportu Wyscout. Bez ustawienia WYSCOUT_ADAPTER_CONFIG test użyje dołączonego szablonu; eksport wymaga uzupełnionego profilu.')
     is_running = jobs.running(store)
-    if st.button('Test Wyscout Connection', disabled=not ready or is_running):
-        with st.spinner('Sprawdzanie logowania i listy rozgrywek…'):
-            leagues = errors(lambda: jobs.probe(store, creds))
+    if st.button('Test Wyscout Connection', disabled=bool(missing) or is_running):
+        with st.spinner('Sprawdzanie logowania i otwarcia Advanced Search…'):
+            if errors(lambda: jobs.probe(store, creds)):
+                st.success('Połączenie potwierdzone: logowanie i otwarcie Advanced Search. Test nie pobierał listy lig.')
+    catalog_ready = profile is not None and profile.get('competition_list_complete') is True
+    if st.button('Pobierz listę rozgrywek', disabled=bool(missing) or is_running or not catalog_ready):
+        with st.spinner('Wczytywanie pełnej listy rozgrywek…'):
+            leagues = errors(lambda: jobs.refresh_leagues(store, creds))
         if leagues is not None:
-            st.success(f'Połączenie potwierdzone. Znaleziono {len(leagues)} lig.')
+            st.success(f'Zapisano {len(leagues)} rozgrywek. Wybierz zakres w Konfiguracji.')
+    if not catalog_ready:
+        st.caption('Pełna lista rozgrywek pozostaje niedostępna, dopóki profil eksportu nie potwierdza jej kompletności.')
+    ready = not missing and profile is not None
     opts = st.session_state.get('download_settings')
     mode = st.session_state.get('download_mode', 'pełny')
+    all_scope = st.session_state.get('download_scope') == 'Wszystkie dostępne rozgrywki'
+    saved_leagues = store.preference('available_leagues', []) if all_scope else []
+    scope_ready = not all_scope or (catalog_ready and bool(saved_leagues) and opts is not None
+                                   and opts.leagues == tuple(saved_leagues))
     action = {'test': 'Test One League', 'pełny': 'Start Full Download', 'odświeżanie': 'Refresh Database'}[mode]
-    if not opts or not opts.leagues:
+    if not scope_ready:
+        st.caption('Dla wszystkich rozgrywek pobierz pełną listę, a następnie ponownie wybierz zakres w Konfiguracji.')
+    elif not opts or not opts.leagues:
         st.caption('Wybierz wcześniej ligi i sezony w Konfiguracji.')
     else:
         st.caption(f'{len(opts.leagues)} lig · {len(opts.timeframes)} sezonów do pobrania')
-    if st.button(action, type='primary', disabled=not ready or is_running or not opts or not opts.leagues):
+    if st.button(action, type='primary', disabled=not ready or is_running or not scope_ready or not opts or not opts.leagues):
         result = errors(lambda: jobs.start(store, creds, settings=opts, mode=mode))
         if result:
             st.rerun()

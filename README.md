@@ -38,7 +38,7 @@ Wszystkie trzy wpisy muszą być na głównym poziomie TOML, poza sekcjami. Po a
 
 Po zapisaniu sekretów otwórz aplikację i wpisz hasło panelu. Sesja wygasa po 8 godzinach; możesz też użyć **Wyloguj się**. Bez skonfigurowanego hasła dostępny jest tylko ręczny import XLSX, bez prywatnych zadań i historii.
 
-`WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` są używane wyłącznie przez kolektor na stronie Wyscout. Po zalogowaniu do panelu przycisk **Test Wyscout Connection** wymaga jeszcze poprawnego profilu interfejsu i działającego Chromium. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
+`WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` są używane wyłącznie przez kolektor na stronie Wyscout. Po zalogowaniu do panelu użyj **Pobieranie → Test Wyscout Connection**, aby sprawdzić logowanie i otwarcie Advanced Search. Test wymaga działającego Chromium. Jeśli brak osobnego profilu i nie podano `WYSCOUT_ADAPTER_CONFIG`, test korzysta z dołączonego szablonu. Osobny przycisk **Pobierz listę rozgrywek** wymaga profilu z potwierdzoną pełną listą; udany test logowania jej nie zastępuje. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
 
 ## Profil interfejsu Wyscout
 

@@ -12,7 +12,7 @@ from filelock import FileLock, Timeout
 from .excel import Report, check_players, column_notes, digest, make_workbook, read_export
 from .partition import LIMIT, partitions
 from .settings import Batch, Cancelled, CollectorError, SignInRequired, VILNIUS
-from .wyscout_adapter import open_adapter
+from .wyscout_adapter import load_profile, open_adapter
 
 LOGGER = logging.getLogger('wyscout.jobs')
 LIVE_OK = frozenset(('kompletny', 'pusty'))
@@ -31,10 +31,27 @@ def running(store):
 
 
 def probe(store, creds):
-    store.remember('connection_ok', False)
+    if not all(creds):
+        raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
     try:
-        with _file_lock(store), open_adapter(*creds) as adapter:
-            store.remember('connection_ok', True)
+        with _file_lock(store):
+            store.remember('connection_ok', False)
+            profile = load_profile(for_connection=True)
+            with open_adapter(*creds, profile=profile):
+                store.remember('connection_ok', True)
+            return True
+    except Timeout:
+        raise CollectorError('Inny eksport lub test korzysta w tej chwili z konta Wyscout.') from None
+
+
+def refresh_leagues(store, creds):
+    if not all(creds):
+        raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
+    profile = load_profile()
+    if profile.get('competition_list_complete') is not True:
+        raise CollectorError('Profil nie potwierdza pełnej listy rozgrywek.')
+    try:
+        with _file_lock(store), open_adapter(*creds, profile=profile) as adapter:
             leagues = adapter.competitions()
             store.remember('available_leagues', leagues)
             return leagues

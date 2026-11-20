@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as BrowserError, sync_playwright
 
-from .settings import CollectorError, SignInRequired, adapter_file
+from .settings import ROOT, CollectorError, SignInRequired, adapter_file
 
 LOGIN_URL = 'https://wyscout.hudl.com/app/'
 RESULT_RANGE = re.compile(r'^\s*\d[\d, .\u00a0\u202f]*\s*[-–]\s*\d[\d, .\u00a0\u202f]*\s+of\s+(\d[\d, .\u00a0\u202f]*)\s*$', re.I)
@@ -25,8 +25,10 @@ def _allowed(url):
             and any(host == root or host.endswith('.' + root) for root in ('hudl.com', 'wyscout.com')))
 
 
-def load_profile():
+def load_profile(*, for_connection=False):
     path = adapter_file()
+    if for_connection and not path.exists() and not os.getenv('WYSCOUT_ADAPTER_CONFIG'):
+        path = ROOT / 'config' / 'wyscout.example.json'
     try:
         with path.open(encoding='utf-8') as f:
             result = json.load(f)
@@ -158,16 +160,18 @@ class WyscoutAdapter:
 
     def competitions(self):
         with self.step('Lista rozgrywek'):
+            if self.profile.get('competition_list_complete') is not True:
+                raise CollectorError('Profil nie potwierdza pełnej listy rozgrywek.')
             self._guard()
             self.loc('competition_control').click()
             options = self.loc('competition_options')
             options.first.wait_for(state='visible')
-            if not self.profile.get('competition_list_complete'):
-                raise CollectorError('Profil nie potwierdza pełnej listy lig. Ustaw tryb wybranych rozgrywek lub uzupełnij profil.')
-            options_list = list(dict.fromkeys(' '.join(t.split()) for t in options.all_inner_texts() if t.strip()))
+            options_list = [' '.join(t.split()) for t in options.all_inner_texts() if t.strip()]
             self.loc('competition_close').click()
             if not options_list:
                 raise CollectorError('Wyscout nie zwrócił dostępnych rozgrywek.')
+            if len(set(options_list)) != len(options_list):
+                raise CollectorError('Lista zawiera nierozróżnialne nazwy rozgrywek. Nie zapisano jej jako pełnej.')
             return options_list
 
     def _set_optional(self, settings):
@@ -295,8 +299,9 @@ class WyscoutAdapter:
 
 
 @contextmanager
-def open_adapter(username, password, checkpoint=lambda: None):
-    profile = load_profile()
+def open_adapter(username, password, checkpoint=lambda: None, *, profile=None):
+    if profile is None:
+        profile = load_profile()
     headed = os.getenv('WYSCOUT_HEADED') == '1'
     with sync_playwright() as playwright:
         try:
