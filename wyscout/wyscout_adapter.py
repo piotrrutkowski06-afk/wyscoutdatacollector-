@@ -102,15 +102,16 @@ class WyscoutAdapter:
 
     def sign_in(self):
         with self.step('Logowanie do Wyscout'):
+            ready_steps = ('advanced_ready', 'signed_in', 'app_switcher')
             target = self.profile.get('login_url', LOGIN_URL)
             if not _allowed(target):
                 raise CollectorError('Adres logowania musi należeć do Hudl lub Wyscout i używać HTTPS.')
             self.page.goto(target, wait_until='domcontentloaded')
-            phase = self._wait_for_login_step(('signed_in', 'advanced_ready', 'login_start', 'username', 'password', 'mfa', 'captcha'))
+            phase = self._wait_for_login_step(ready_steps + ('login_start', 'username', 'password', 'mfa', 'captcha'))
             if phase == 'login_start':
                 self._official_origin()
                 self.loc('login_start').click()
-                phase = self._wait_for_login_step(('signed_in', 'advanced_ready', 'username', 'password', 'mfa', 'captcha'))
+                phase = self._wait_for_login_step(ready_steps + ('username', 'password', 'mfa', 'captcha'))
             if phase == 'username':
                 self._official_origin()
                 if not self.username or not self.password:
@@ -128,18 +129,22 @@ class WyscoutAdapter:
                 self.loc('password').fill(self.password)
                 self._official_origin()
                 self.loc('login_submit').click()
-                phase = self._wait_for_login_step(('signed_in', 'advanced_ready', 'mfa', 'captcha', 'login_error'))
+                phase = self._wait_for_login_step(ready_steps + ('mfa', 'captcha', 'login_error'))
             if phase == 'login_error':
                 raise CollectorError('Hudl/Wyscout odrzucił logowanie.')
             if phase in ('mfa', 'captcha'):
                 if not self.headed:
                     raise CollectorError('Hudl/Wyscout wymaga ręcznego potwierdzenia. Dokończ je w trybie z widocznym oknem Chromium.')
-                self._wait_for_login_step(('signed_in', 'advanced_ready'), timeout=240)
+                self._wait_for_login_step(ready_steps, timeout=240)
             self._official_origin()
             if not self._visible('advanced_ready'):
                 entry = self.loc('advanced_search_entry', optional=True)
                 if entry is None:
                     entry = self.page.get_by_text('Advanced search', exact=False)
+                switcher = self.loc('app_switcher', optional=True)
+                if switcher is not None and not entry.is_visible():
+                    switcher.click()
+                self._official_origin()
                 entry.click()
             self.loc('advanced_ready').wait_for(state='visible')
             self._official_origin()

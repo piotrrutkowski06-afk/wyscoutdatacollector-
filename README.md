@@ -12,6 +12,8 @@ Prywatny panel Streamlit dla scoutingu FK Žalgiris Vilnius. W **Konfiguracja �
 
 **Replit:** otwórz podgląd Wyscout Data Collector. Skrypt `scripts/run-wyscout.sh` uruchamia Streamlit na przydzielonym porcie. W razie potrzeby w NixOS Playwright korzysta z Node zainstalowanego w środowisku, a Chromium z systemu.
 
+**Streamlit Community Cloud:** umieść `packages.txt` obok `app.py` i `requirements.txt` w katalogu głównym repozytorium. Cloud instaluje z niego systemowy Chromium; sam wpis `playwright` w `requirements.txt` nie instaluje przeglądarki. Po przebudowie aplikacji wybierz **Diagnostyka → Sprawdź start Chromium**. Domyślnie kolektor wykrywa systemowy Chromium; usuń `WYSCOUT_CHROMIUM` z Secrets, jeśli wskazuje ścieżkę z innego komputera.
+
 **Lokalnie** (Python 3.11+):
 
 ```sh
