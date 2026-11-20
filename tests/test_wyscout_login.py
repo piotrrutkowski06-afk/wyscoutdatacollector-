@@ -35,7 +35,7 @@ def browser():
             yield instance
 
 
-@pytest.mark.parametrize('stage', ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8', None))
+@pytest.mark.parametrize('stage', ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W7', 'W8', None))
 def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch):
     profile_path = Path(__file__).resolve().parents[1] / 'config' / 'wyscout.example.json'
     profile = json.loads(profile_path.read_text(encoding='utf-8'))
@@ -54,12 +54,20 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         path, content = failures[stage]
         pages[path] = content
     destinations = {origin + path: content for path, content in pages.items()}
+    if stage == 'W6-identity':
+        redirect = 'https://identity.hudl.com/result?state=redact-this-test-value'
+        destinations[origin + '/password'] = PASSWORD.replace('/home', redirect)
+        destinations[redirect] = PASSWORD
+    if stage == 'W6-frame':
+        destinations[origin + '/home'] = '<iframe src="/embedded"></iframe>'
+        destinations[origin + '/embedded'] = HOME
 
     def serve(route):
         if stage == 'W1' or route.request.url not in destinations:
             route.abort()
         else:
-            route.fulfill(content_type='text/html', body=destinations[route.request.url])
+            status = 403 if stage == 'W6' and route.request.url == origin + '/home' else 200
+            route.fulfill(status=status, content_type='text/html', body=destinations[route.request.url])
 
     with browser.new_context() as context:
         context.route('**/*', serve)
@@ -69,10 +77,18 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         wait = adapter._wait_for_login_step
         monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices: wait(choices, timeout=1.2))
         if stage:
-            with pytest.raises(CollectorError, match=f'^{stage} · ') as error:
+            with pytest.raises(CollectorError, match=f"^{stage.split('-')[0]} · ") as error:
                 adapter.sign_in()
             message = str(error.value)
-            assert all(text not in message for text in ('synthetic-', 'https://', 'Call log'))
+            assert all(text not in message for text in ('synthetic-', 'https://', 'Call log', 'redact-this-test-value'))
+            if stage == 'W6':
+                # Chromium may replace an empty 403 response with its own error document.
+                assert 'HTTP 403.' in message
+            if stage == 'W6-identity':
+                assert 'Ekran: logowanie Hudl.' in message and 'Pole hasła nadal widoczne.' in message
+            if stage == 'W6-frame':
+                assert 'Ekran: aplikacja Wyscout.' in message
+                assert 'Znacznik Wyscout widoczny w osadzonym widoku.' in message
         else:
             adapter.sign_in()
             assert adapter._visible('advanced_ready')

@@ -40,7 +40,7 @@ Po zapisaniu sekretów otwórz aplikację i wpisz hasło panelu. Sesja wygasa po
 
 `WYSCOUT_USERNAME` i `WYSCOUT_PASSWORD` są używane wyłącznie przez kolektor na stronie Wyscout. Po zalogowaniu do panelu użyj **Pobieranie → Test Wyscout Connection**, aby sprawdzić logowanie i otwarcie Advanced Search. Test wymaga działającego Chromium. Jeśli brak osobnego profilu i nie podano `WYSCOUT_ADAPTER_CONFIG`, test korzysta z dołączonego szablonu. Osobny przycisk **Pobierz listę rozgrywek** wymaga profilu z potwierdzoną pełną listą; udany test logowania jej nie zastępuje. Nie zapisujemy cookies ani sesji Wyscout. Na wygaśnięcie sesji podczas pobierania kolektor odpowiada najwyżej jedną próbą ponownego logowania. Używaj kolektora tylko w ramach uprawnień licencji Hudl.
 
-Jeżeli test zwróci błąd, przekaż wyłącznie treść komunikatu z kodem `W1`–`W8`. Kod opisuje etap, na którym test się zatrzymał. Brak rozpoznania strony po wysłaniu formularza nie oznacza automatycznie błędnego hasła. Nie przesyłaj danych logowania, ciasteczek ani adresów przekierowań.
+Jeżeli test zwróci błąd, przekaż wyłącznie treść komunikatu z kodem `W1`–`W8`. Kod opisuje etap, na którym test się zatrzymał. Przy `W6` aplikacja pokazuje kategorię końcowego ekranu, obecność formularza oraz kod HTTP ostatniego otwarcia strony po kliknięciu, jeśli nastąpiło. To nie jest odpowiedź samej usługi logowania i nie przesądza o poprawności hasła. Nie przesyłaj danych logowania, ciasteczek ani adresów przekierowań.
 
 ## Profil interfejsu Wyscout
 

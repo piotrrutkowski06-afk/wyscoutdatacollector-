@@ -67,17 +67,17 @@ class WyscoutAdapter:
                 raise SignInRequired('Sesja wygasła. Zaloguj się ponownie do Wyscout.') from None
             raise CollectorError(f'{name}: nie znaleziono elementu lub strona nie odpowiedziała. Sprawdź profil interfejsu.') from None
 
-    def loc(self, key, *, optional=False):
+    def loc(self, key, *, optional=False, scope=None):
         selector = self.profile['selectors'].get(key)
         if not isinstance(selector, str) or not selector.strip():
             if optional:
                 return None
             raise CollectorError(f'Brak potwierdzonego selektora w profilu interfejsu: {key}.')
-        return self.page.locator(selector)
+        return (self.page if scope is None else scope).locator(selector)
 
-    def _visible(self, key):
+    def _visible(self, key, *, scope=None):
         try:
-            locator = self.loc(key, optional=True)
+            locator = self.loc(key, optional=True, scope=scope)
             return locator is not None and locator.is_visible()
         except BrowserError:
             return False
@@ -103,13 +103,73 @@ class WyscoutAdapter:
         raise BrowserTimeout('Nie rozpoznano oczekiwanego ekranu.')
 
     @contextmanager
-    def _login_stage(self, message):
+    def _login_stage(self, message, *, details=None):
         self.checkpoint()
         try:
             yield
         except BrowserError:
             # Playwright errors can contain the login URL or values from the form.
+            if details is not None:
+                try:
+                    message = f'{message} {details()}'
+                except BrowserError:
+                    pass
             raise CollectorError(message) from None
+
+    def _post_password_details(self, ready, document_status):
+        url = self.page.url
+        hostname = urlsplit(url).hostname
+        if hostname == 'identity.hudl.com' and _allowed(url):
+            screen = 'logowanie Hudl'
+        elif hostname == 'wyscout.hudl.com' and _allowed(url):
+            screen = 'aplikacja Wyscout'
+        elif _allowed(url):
+            screen = 'inna strona Hudl/Wyscout'
+        else:
+            screen = 'poza rozpoznaną domeną Hudl/Wyscout'
+        parts = [f'Ekran: {screen}.']
+        if document_status is not None:
+            parts.append(f'Z ostatniego otwarcia strony: HTTP {document_status}.')
+        if _allowed(url):
+            if self._visible('password'):
+                parts.append('Pole hasła nadal widoczne.')
+            elif self._visible('username'):
+                parts.append('Pole e-mail ponownie widoczne.')
+            else:
+                parts.append('Nie widać rozpoznanych pól logowania.')
+            if any(
+                frame.parent_frame is not None and _allowed(frame.url)
+                and any(self._visible(key, scope=frame) for key in ready)
+                for frame in self.page.frames
+            ):
+                parts.append('Znacznik Wyscout widoczny w osadzonym widoku.')
+        return ' '.join(parts)
+
+    def _submit_password(self, ready, challenge):
+        document_status = None
+
+        def record_document_status(response):
+            nonlocal document_status
+            if response.request.resource_type == 'document':
+                try:
+                    if response.frame == self.page.main_frame:
+                        document_status = response.status
+                except BrowserError:
+                    pass
+
+        self.page.on('response', record_document_status)
+        try:
+            with self._login_stage('W5 · Nie udało się użyć pola hasła lub wysłać formularza.'):
+                self.loc('password').fill(self.password)
+                self._official_origin()
+                self.loc('login_submit').click()
+            with self._login_stage(
+                'W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.',
+                details=lambda: self._post_password_details(ready, document_status),
+            ):
+                return self._wait_for_login_step(challenge + ready)
+        finally:
+            self.page.remove_listener('response', record_document_status)
 
     def sign_in(self):
         ready = ('advanced_ready', 'signed_in', 'app_switcher')
@@ -143,12 +203,7 @@ class WyscoutAdapter:
             self._official_origin()
             if not self.password:
                 raise CollectorError('Brak WYSCOUT_PASSWORD w Secrets.')
-            with self._login_stage('W5 · Nie udało się użyć pola hasła lub wysłać formularza.'):
-                self.loc('password').fill(self.password)
-                self._official_origin()
-                self.loc('login_submit').click()
-            with self._login_stage('W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.'):
-                phase = self._wait_for_login_step(challenge + ready)
+            phase = self._submit_password(ready, challenge)
         if phase == 'login_error':
             raise CollectorError('Hudl/Wyscout wyświetlił komunikat o błędzie logowania.')
         if phase in ('mfa', 'captcha'):
