@@ -30,28 +30,29 @@ def running(store):
         return True
 
 
-def probe(store, creds, *, on_w6_preview=None):
+def probe(store, creds, *, on_w6_preview=None, allow_force_login=False):
     if not all(creds):
         raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
     try:
         with _file_lock(store):
             store.remember('connection_ok', False)
             profile = load_profile(for_connection=True)
-            with open_adapter(*creds, profile=profile, on_w6_preview=on_w6_preview):
+            with open_adapter(*creds, profile=profile, on_w6_preview=on_w6_preview,
+                              allow_force_login=allow_force_login):
                 store.remember('connection_ok', True)
             return True
     except Timeout:
         raise CollectorError('Inny eksport lub test korzysta w tej chwili z konta Wyscout.') from None
 
 
-def refresh_leagues(store, creds):
+def refresh_leagues(store, creds, *, allow_force_login=False):
     if not all(creds):
         raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
     profile = load_profile()
     if profile.get('competition_list_complete') is not True:
         raise CollectorError('Profil nie potwierdza pełnej listy rozgrywek.')
     try:
-        with _file_lock(store), open_adapter(*creds, profile=profile) as adapter:
+        with _file_lock(store), open_adapter(*creds, profile=profile, allow_force_login=allow_force_login) as adapter:
             leagues = adapter.competitions()
             store.remember('available_leagues', leagues)
             return leagues
@@ -59,7 +60,7 @@ def refresh_leagues(store, creds):
         raise CollectorError('Inny eksport lub test korzysta w tej chwili z konta Wyscout.') from None
 
 
-def start(store, creds, *, settings=None, mode='pełny', resume=None):
+def start(store, creds, *, settings=None, mode='pełny', resume=None, allow_force_login=False):
     if not all(creds):
         raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
     lock = _file_lock(store)
@@ -80,7 +81,8 @@ def start(store, creds, *, settings=None, mode='pełny', resume=None):
             job = store.create(settings, mode, base_job)
         store.stop(job, False)
         store.job_update(job, 'w toku')
-        threading.Thread(target=_run, args=(store, job, creds, lock), daemon=True, name='wyscout-job').start()
+        threading.Thread(target=_run, args=(store, job, creds, lock), kwargs={'allow_force_login': allow_force_login},
+                         daemon=True, name='wyscout-job').start()
         return job
     except Exception:
         lock.release()
@@ -233,7 +235,7 @@ def _finish(store, job):
         store.publish(job, str(output), 'Gotowy plik Excel dla wybranych lig i sezonów.')
 
 
-def _run(store, job, creds, lock):
+def _run(store, job, creds, lock, *, allow_force_login=False):
     def checkpoint():
         if store.get(job)['stop']:
             raise Cancelled('Zatrzymano na żądanie. Poprawnie sprawdzone partie pozostawiono do wznowienia.')
@@ -243,7 +245,8 @@ def _run(store, job, creds, lock):
         renewed = False
         store.remember('connection_ok', False)
         with ExitStack() as browsers:
-            adapter = browsers.enter_context(open_adapter(*creds, checkpoint=checkpoint))
+            adapter = browsers.enter_context(open_adapter(*creds, checkpoint=checkpoint,
+                                                         allow_force_login=allow_force_login))
             store.remember('connection_ok', True)
             for league, rows in groupby(store.batches(job), key=lambda row: row['league']):
                 for row in rows:

@@ -6,7 +6,7 @@ import pytest
 from wyscout import jobs
 from wyscout.excel import digest
 from wyscout.partition import partitions
-from wyscout.settings import CollectorError, Settings
+from wyscout.settings import CollectorError, Settings, SignInRequired
 from wyscout.store import Store
 from wyscout.wyscout_adapter import load_profile
 
@@ -19,15 +19,19 @@ def test_connection_uses_bundled_template_without_fetching_leagues(tmp_path, mon
     calls = []
 
     @contextmanager
-    def sign_in_only(*_, profile, on_w6_preview):
+    def sign_in_only(*_, profile, on_w6_preview, allow_force_login):
         assert on_w6_preview is None
-        calls.append(profile)
+        calls.append((profile, allow_force_login))
         yield object()  # The probe must not call competitions().
 
     monkeypatch.setattr(jobs, 'open_adapter', sign_in_only)
     assert jobs.probe(store, ('test-user', 'test-only')) is True
-    assert calls[0]['selectors']['app_switcher']
-    assert calls[0]['competition_list_complete'] is False
+    profile, consent = calls[0]
+    assert profile['selectors']['app_switcher']
+    assert profile['competition_list_complete'] is False
+    assert consent is False
+    assert jobs.probe(store, ('test-user', 'test-only'), allow_force_login=True) is True
+    assert calls[1][1] is True
     assert store.preference('connection_ok') is True
     assert store.preference('available_leagues') == ['Test League']
     with pytest.raises(CollectorError, match='Brak profilu'):
@@ -55,13 +59,48 @@ def test_league_refresh_requires_a_confirmed_profile_and_preserves_saved_list_on
             return ['New League']
 
     @contextmanager
-    def open_catalogue(*_, profile):
+    def open_catalogue(*_, profile, allow_force_login):
         assert profile['competition_list_complete']
+        assert allow_force_login is True
         yield VerifiedCatalogue()
 
     monkeypatch.setattr(jobs, 'open_adapter', open_catalogue)
-    assert jobs.refresh_leagues(store, ('test-user', 'test-only')) == ['New League']
+    assert jobs.refresh_leagues(store, ('test-user', 'test-only'), allow_force_login=True) == ['New League']
     assert store.preference('available_leagues') == ['New League']
+
+
+def test_job_consent_reaches_initial_login_but_not_automatic_renewal(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    calls = []
+
+    @contextmanager
+    def open_browser(*_, checkpoint, allow_force_login=False):
+        calls.append(allow_force_login)
+        yield object()
+
+    def collect(*_):
+        if len(calls) == 1:
+            raise SignInRequired('Test session expired')
+
+    class InlineThread:
+        def __init__(self, *, target, args, kwargs, **_):
+            self.run = lambda: target(*args, **kwargs)
+
+        def start(self):
+            self.run()
+
+    monkeypatch.setattr(jobs.threading, 'Thread', InlineThread)
+    monkeypatch.setattr(jobs, 'open_adapter', open_browser)
+    monkeypatch.setattr(jobs, '_collect_batch', collect)
+    monkeypatch.setattr(jobs, '_check_league', lambda *_: None)
+    monkeypatch.setattr(jobs, '_finish', lambda *_: None)
+    settings = Settings(('Liga A',), ('current season',), ('GK',))
+    creds = ('test-user', 'test-only')
+    job = jobs.start(store, creds, settings=settings, allow_force_login=True)
+    assert calls == [True, False]
+    calls.clear()
+    jobs.start(store, creds, resume=job)
+    assert calls == [False, False]
 
 
 def test_partition_at_boundary():

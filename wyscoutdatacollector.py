@@ -163,8 +163,13 @@ def progress(store):
     file_button(store, selected, 'Download Excel — ostatnie zadanie')
 
 
+def confirm_wyscout_operation():
+    st.session_state['_force_login_for_operation'] = st.session_state.pop('allow_force_login', False)
+
+
 def manager(store):
     st.header('Download Manager')
+    allow_force_login = st.session_state.pop('_force_login_for_operation', False)
     if store is None:
         st.info('Aby odblokować pobieranie, ustaw WYSCOUT_PANEL_PASSWORD w Secrets i zaloguj się do panelu. '
                 'Bez hasła możesz użyć importu istniejących plików.')
@@ -184,6 +189,10 @@ def manager(store):
     if profile is None:
         st.info('Brak gotowego profilu eksportu Wyscout. Bez ustawienia WYSCOUT_ADAPTER_CONFIG test użyje dołączonego szablonu; eksport wymaga uzupełnionego profilu.')
     is_running = jobs.running(store)
+    st.checkbox('Zezwól na Force login w następnej operacji', key='allow_force_login',
+                disabled=bool(missing) or is_running)
+    st.caption('Jeśli Wyscout zgłosi „Multiple access attempt”, ta opcja pozwala zamknąć wszystkie pozostałe sesje konta. '
+               'Zgoda nie jest zapisywana i nie obejmuje automatycznego ponownego logowania.')
     preview_supported = st.__version__ == PREVIEW_STREAMLIT_VERSION
     with st.expander('Prywatny podgląd W6'):
         preview_requested = st.checkbox(
@@ -194,11 +203,11 @@ def manager(store):
                    'Może zawierać dane konta: nie udostępniaj obrazu.')
         if not preview_supported:
             st.caption('Podgląd jest niedostępny w tej wersji Streamlit. Zwykły test nadal działa.')
-    if st.button('Test Wyscout Connection', disabled=bool(missing) or is_running):
+    if st.button('Test Wyscout Connection', disabled=bool(missing) or is_running, on_click=confirm_wyscout_operation):
         previews = []
         with st.spinner('Sprawdzanie logowania i otwarcia Advanced Search…'):
             on_preview = previews.append if preview_supported and preview_requested else None
-            if errors(lambda: jobs.probe(store, creds, on_w6_preview=on_preview)):
+            if errors(lambda: jobs.probe(store, creds, on_w6_preview=on_preview, allow_force_login=allow_force_login)):
                 st.success('Połączenie potwierdzone: logowanie i otwarcie Advanced Search. Test nie pobierał listy lig.')
         if previews and panel_is_authorized(config_value('WYSCOUT_PANEL_PASSWORD')):
             markup = preview_markup(previews[0])
@@ -210,9 +219,10 @@ def manager(store):
             else:
                 st.caption('Nie pokazano podglądu: to nie był rozpoznany ekran Wyscout lub nie dało się bezpiecznie wykonać obrazu.')
     catalog_ready = profile is not None and profile.get('competition_list_complete') is True
-    if st.button('Pobierz listę rozgrywek', disabled=bool(missing) or is_running or not catalog_ready):
+    if st.button('Pobierz listę rozgrywek', disabled=bool(missing) or is_running or not catalog_ready,
+                 on_click=confirm_wyscout_operation):
         with st.spinner('Wczytywanie pełnej listy rozgrywek…'):
-            leagues = errors(lambda: jobs.refresh_leagues(store, creds))
+            leagues = errors(lambda: jobs.refresh_leagues(store, creds, allow_force_login=allow_force_login))
         if leagues is not None:
             st.success(f'Zapisano {len(leagues)} rozgrywek. Wybierz zakres w Konfiguracji.')
     if not catalog_ready:
@@ -231,15 +241,16 @@ def manager(store):
         st.caption('Wybierz wcześniej ligi i sezony w Konfiguracji.')
     else:
         st.caption(f'{len(opts.leagues)} lig · {len(opts.timeframes)} sezonów do pobrania')
-    if st.button(action, type='primary', disabled=not ready or is_running or not scope_ready or not opts or not opts.leagues):
-        result = errors(lambda: jobs.start(store, creds, settings=opts, mode=mode))
+    if st.button(action, type='primary', disabled=not ready or is_running or not scope_ready or not opts or not opts.leagues,
+                 on_click=confirm_wyscout_operation):
+        result = errors(lambda: jobs.start(store, creds, settings=opts, mode=mode, allow_force_login=allow_force_login))
         if result:
             st.rerun()
     past = {j['id']: f"{j['created'][:19].replace('T', ' ')} UTC · {j['mode']} · {j['status']}" for j in store.history() if j['status'] != 'ukończono'}
     if past and not is_running:
         job = st.selectbox('Zadanie do wznowienia', tuple(past), format_func=past.get)
-        if st.button('Resume Download', disabled=not ready):
-            result = errors(lambda: jobs.start(store, creds, resume=job))
+        if st.button('Resume Download', disabled=not ready, on_click=confirm_wyscout_operation):
+            result = errors(lambda: jobs.start(store, creds, resume=job, allow_force_login=allow_force_login))
             if result:
                 st.rerun()
     progress(store)

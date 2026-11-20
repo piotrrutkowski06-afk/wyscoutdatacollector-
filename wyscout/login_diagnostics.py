@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from playwright.sync_api import Error as BrowserError
 
 
-DIAGNOSTICS_VERSION = 'SC-W6-1'
+DIAGNOSTICS_VERSION = 'SC-W6-2'
 _RESOURCE = {'script': 'skrypty', 'xhr': 'API', 'fetch': 'API'}
 
 

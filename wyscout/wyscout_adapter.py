@@ -15,6 +15,7 @@ from .login_diagnostics import DIAGNOSTICS_VERSION, PostPasswordDiagnostics
 from .settings import ROOT, CollectorError, SignInRequired, adapter_file
 
 LOGIN_URL = 'https://wyscout.hudl.com/app/'
+MULTIPLE_ACCESS = 'body:has(:text-is("Multiple access attempt"):visible)'
 RESULT_RANGE = re.compile(r'^\s*\d[\d, .\u00a0\u202f]*\s*[-–]\s*\d[\d, .\u00a0\u202f]*\s+of\s+(\d[\d, .\u00a0\u202f]*)\s*$', re.I)
 
 
@@ -24,6 +25,10 @@ def _allowed(url):
     return (parsed.scheme == 'https' and not parsed.username and not parsed.password
             and parsed.port in (443, None)
             and any(host == root or host.endswith('.' + root) for root in ('hudl.com', 'wyscout.com')))
+
+
+def _wyscout_origin(url):
+    return _allowed(url) and urlsplit(url).hostname == urlsplit(LOGIN_URL).hostname
 
 
 def load_profile(*, for_connection=False):
@@ -48,13 +53,15 @@ def connect_browser(playwright, *, headed=False):
 
 
 class WyscoutAdapter:
-    def __init__(self, page, profile, username, password, checkpoint=lambda: None, *, headed=False, on_w6_preview=None):
+    def __init__(self, page, profile, username, password, checkpoint=lambda: None, *,
+                 headed=False, on_w6_preview=None, allow_force_login=False):
         self.page = page
         self.profile = profile
         self.username, self.password = username, password
         self.checkpoint = checkpoint
         self.headed = headed
         self.on_w6_preview = on_w6_preview
+        self.allow_force_login = allow_force_login
         self.batch = None
         self.settings = None
         self.season = None
@@ -94,12 +101,18 @@ class WyscoutAdapter:
         if not _allowed(self.page.url):
             raise CollectorError('Przekierowanie poza domeny Hudl i Wyscout. Zatrzymano logowanie.')
 
-    def _wait_for_login_step(self, choices, timeout=35):
+    def _wait_for_login_step(self, choices, timeout=35, *, wait_for_conflict_to_clear=False):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.checkpoint()
+            if wait_for_conflict_to_clear and self.page.locator(MULTIPLE_ACCESS).is_visible():
+                self.page.wait_for_timeout(250)
+                continue
             for key in choices:
-                if self._visible(key):
+                if key == 'multiple_access':
+                    if self.page.locator(MULTIPLE_ACCESS).is_visible():
+                        return key
+                elif self._visible(key):
                     return key
             self.page.wait_for_timeout(250)
         raise BrowserTimeout('Nie rozpoznano oczekiwanego ekranu.')
@@ -177,8 +190,7 @@ class WyscoutAdapter:
 
     def _capture_w6_preview(self):
         def safe_page():
-            url = self.page.url
-            return (_allowed(url) and urlsplit(url).hostname == 'wyscout.hudl.com'
+            return (_wyscout_origin(self.page.url)
                     and not any(self._visible(key) for key in ('username', 'password', 'mfa', 'captcha')))
 
         try:
@@ -197,7 +209,7 @@ class WyscoutAdapter:
             self.on_w6_preview(self._capture_w6_preview())
         return self._post_password_details(ready, diagnostics)
 
-    def _submit_password(self, ready, challenge):
+    def _submit_password(self, ready, outcomes):
         diagnostics = PostPasswordDiagnostics(self.page, _allowed)
         with diagnostics.observe():
             with self._login_stage('W5 · Nie udało się użyć pola hasła lub wysłać formularza.'):
@@ -208,11 +220,25 @@ class WyscoutAdapter:
                 'W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.',
                 details=lambda: self._w6_details(ready, diagnostics),
             ):
-                return self._wait_for_login_step(challenge + ready)
+                return self._wait_for_login_step(outcomes)
+
+    def _confirm_multiple_access(self):
+        if not _wyscout_origin(self.page.url):
+            raise CollectorError('W9 · Nie potwierdzono adresu ekranu „Multiple access attempt”. Nie kliknięto „Force login”.')
+        if not self.allow_force_login:
+            raise CollectorError('W9 · Wyscout: „Multiple access attempt”. Zamknij inne sesje lub zaznacz '
+                                 '„Zezwól na Force login w następnej operacji” i spróbuj ponownie. '
+                                 'Force login zamyka wszystkie pozostałe sesje tego konta.')
+        with self._login_stage('W9 · Nie udało się użyć przycisku „Force login”.'):
+            button = self.page.locator(MULTIPLE_ACCESS).get_by_role('button', name='Force login', exact=True)
+            if button.filter(visible=True).count() != 1:
+                raise CollectorError('W9 · Nie znaleziono dokładnie jednego widocznego przycisku „Force login”.')
+            button.filter(visible=True).click()
 
     def sign_in(self):
         ready = ('advanced_ready', 'signed_in', 'app_switcher')
         challenge = ('mfa', 'captcha', 'login_error')
+        outcomes = challenge + ('multiple_access',) + ready
         form = ('username', 'password')
         target = self.profile.get('login_url', LOGIN_URL)
         if not _allowed(target):
@@ -220,11 +246,11 @@ class WyscoutAdapter:
         with self._login_stage('W1 · Nie otwarto strony logowania Wyscout.'):
             self.page.goto(target, wait_until='domcontentloaded')
         with self._login_stage('W2 · Strona się otworzyła, ale nie rozpoznano formularza Hudl.'):
-            phase = self._wait_for_login_step(challenge + ready + ('login_start',) + form)
+            phase = self._wait_for_login_step(outcomes + ('login_start',) + form)
             if phase == 'login_start':
                 self._official_origin()
                 self.loc('login_start').click()
-                phase = self._wait_for_login_step(challenge + ready + form)
+                phase = self._wait_for_login_step(outcomes + form)
         if phase == 'username':
             self._official_origin()
             if not self.username or not self.password:
@@ -242,16 +268,26 @@ class WyscoutAdapter:
             self._official_origin()
             if not self.password:
                 raise CollectorError('Brak WYSCOUT_PASSWORD w Secrets.')
-            phase = self._submit_password(ready, challenge)
-        if phase == 'login_error':
-            raise CollectorError('Hudl/Wyscout wyświetlił komunikat o błędzie logowania.')
-        if phase in ('mfa', 'captcha'):
-            if not self.headed:
-                raise CollectorError('Hudl/Wyscout wymaga ręcznego potwierdzenia. Dokończ je w trybie z widocznym oknem Chromium.')
-            with self._login_stage('Nie potwierdzono zakończenia ręcznej weryfikacji w Hudl/Wyscout.'):
-                phase = self._wait_for_login_step(('login_error',) + ready, timeout=240)
+            phase = self._submit_password(ready, outcomes)
+        forced = False
+        while phase not in ready:
             if phase == 'login_error':
                 raise CollectorError('Hudl/Wyscout wyświetlił komunikat o błędzie logowania.')
+            if phase == 'multiple_access':
+                if forced:
+                    raise CollectorError('W9 · Po „Force login” Wyscout nadal zgłasza konflikt sesji. Nie ponowiono kliknięcia.')
+                self._confirm_multiple_access()
+                forced = True
+                with self._login_stage('W9 · Po „Force login” nie potwierdzono strony głównej Wyscout. Nie ponowiono kliknięcia.'):
+                    # Wait for the conflict screen to close, not just for an underlying home marker.
+                    phase = self._wait_for_login_step(challenge + ready, wait_for_conflict_to_clear=True)
+            elif phase in ('mfa', 'captcha'):
+                if not self.headed:
+                    raise CollectorError('Hudl/Wyscout wymaga ręcznego potwierdzenia. Dokończ je w trybie z widocznym oknem Chromium.')
+                with self._login_stage('Nie potwierdzono zakończenia ręcznej weryfikacji w Hudl/Wyscout.'):
+                    phase = self._wait_for_login_step(('login_error', 'multiple_access') + ready, timeout=240)
+            else:
+                raise CollectorError('Nie potwierdzono zakończenia logowania do Wyscout.')
         self._official_origin()
         self._open_advanced_search()
 
@@ -424,7 +460,8 @@ class WyscoutAdapter:
 
 
 @contextmanager
-def open_adapter(username, password, checkpoint=lambda: None, *, profile=None, on_w6_preview=None):
+def open_adapter(username, password, checkpoint=lambda: None, *, profile=None, on_w6_preview=None,
+                 allow_force_login=False):
     if profile is None:
         profile = load_profile()
     headed = os.getenv('WYSCOUT_HEADED') == '1'
@@ -439,7 +476,8 @@ def open_adapter(username, password, checkpoint=lambda: None, *, profile=None, o
             page.set_default_timeout(12_000)
             page.set_default_navigation_timeout(35_000)
             adapter = WyscoutAdapter(page, profile, username, password, checkpoint,
-                                     headed=headed, on_w6_preview=on_w6_preview)
+                                     headed=headed, on_w6_preview=on_w6_preview,
+                                     allow_force_login=allow_force_login)
             adapter.sign_in()
             yield adapter
         finally:

@@ -25,6 +25,8 @@ HOME = """<a class='gears-button-inner' data='{"command":"switcher_apps"}'
 ENTRY = """<div class='drawer-single-app' command='loadApp' title='Advanced Search'
     onclick='document.querySelector("#search").hidden=false'>Advanced Search</div>"""
 PLATFORM = '<header>Platform</header><nav><button>Main countries</button><button>International Competitions</button></nav>'
+CONFLICT = '''<section><h1>Multiple access attempt</h1>
+    <button onclick="location.href='/confirmed'"><span><span>Force login</span></span></button></section>'''
 
 
 @pytest.fixture(scope='module')
@@ -106,7 +108,7 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         if not opted_in:
             monkeypatch.setattr(adapter, '_capture_w6_preview', lambda: pytest.fail('Capture without opt-in'))
         wait = adapter._wait_for_login_step
-        monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices: wait(choices, timeout=1.2))
+        monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices, **kw: wait(choices, timeout=1.2, **kw))
         if stage in failures or stage in ('W1', 'W6-identity', 'W6-frame'):
             with pytest.raises(CollectorError, match=f"^{stage.split('-')[0]} · ") as error:
                 adapter.sign_in()
@@ -123,7 +125,7 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
                 assert 'Ekran: aplikacja Wyscout.' in message
                 assert 'Znacznik Wyscout widoczny w osadzonym widoku.' in message
             if stage == 'W6-cloud':
-                assert 'Raport SC-W6-1.' in message
+                assert 'Raport SC-W6-2.' in message
                 assert 'Stan dokumentu: complete.' in message and 'Widoczny tekst strony: tak.' in message
                 assert 'Widoczne elementy Wyscout: Platform.' in message
                 assert 'API/Hudl/Wyscout HTTP 403 ×1' in message
@@ -142,3 +144,68 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
             adapter.sign_in()
             assert adapter._visible('advanced_ready')
             assert not previews
+
+
+@pytest.mark.parametrize('case, consent, expected_clicks, error', [
+    ('normal', False, 0, None),
+    ('normal', True, 0, None),
+    ('conflict', False, 0, 'zamknij inne sesje'),
+    ('conflict', True, 1, None),
+    ('conflict-with-home', True, 1, None),
+    ('repeated', True, 1, 'nie ponowiono'),
+    ('other-origin', True, 0, 'nie potwierdzono adresu'),
+    ('two-buttons', True, 0, 'jednego widocznego przycisku'),
+    ('only-button', True, 0, 'nie rozpoznano strony głównej'),
+    ('captcha', True, 0, 'wymaga ręcznego potwierdzenia'),
+])
+def test_force_login_is_confirmed_once_on_the_wyscout_conflict_screen(
+    browser, monkeypatch, case, consent, expected_clicks, error,
+):
+    profile_path = Path(__file__).resolve().parents[1] / 'config' / 'wyscout.example.json'
+    profile = json.loads(profile_path.read_text(encoding='utf-8'))
+    origin = 'https://wyscout.hudl.com'
+    home = HOME.replace('<!--entry-->', ENTRY)
+    destinations = {origin + '/app/': EMAIL, origin + '/password': PASSWORD, origin + '/confirmed': home}
+    destinations[origin + '/home'] = {
+        'normal': home,
+        'conflict-with-home': PLATFORM + home + CONFLICT,
+        'two-buttons': CONFLICT + '<button>Force login</button>',
+        'only-button': CONFLICT.replace('Multiple access attempt', 'Other screen'),
+        'captcha': CONFLICT + '<div id="captcha">Complete verification</div>',
+    }.get(case, CONFLICT)
+    if case == 'repeated':
+        destinations[origin + '/confirmed'] = PLATFORM + home + CONFLICT
+    if case == 'other-origin':
+        wrong = 'https://identity.hudl.com/conflict'
+        destinations[origin + '/password'] = PASSWORD.replace('/home', wrong)
+        destinations[wrong] = CONFLICT
+    if case == 'captcha':
+        profile['selectors']['captcha'] = '#captcha'
+    clicks = []
+
+    def serve(route):
+        if route.request.url.endswith('/confirmed'):
+            clicks.append(route.request.url)
+        if route.request.url in destinations:
+            route.fulfill(content_type='text/html', body=destinations[route.request.url])
+        else:
+            route.abort()
+
+    with browser.new_context() as context:
+        context.route('**/*', serve)
+        page = context.new_page()
+        page.set_default_timeout(1200)
+        previews = []
+        adapter = WyscoutAdapter(page, profile, 'synthetic-user@example.test', 'test-only',
+                                 allow_force_login=consent, on_w6_preview=previews.append)
+        wait = adapter._wait_for_login_step
+        monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices, **kw: wait(choices, timeout=1.2, **kw))
+        if error:
+            with pytest.raises(CollectorError) as caught:
+                adapter.sign_in()
+            assert error in str(caught.value).lower()
+            assert len(previews) == int(case == 'only-button')
+        else:
+            adapter.sign_in()
+            assert adapter._visible('advanced_ready') and not previews
+        assert clicks == [origin + '/confirmed'] * expected_clicks
