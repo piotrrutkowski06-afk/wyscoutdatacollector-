@@ -1,6 +1,8 @@
+from io import BytesIO
 import json
 from pathlib import Path
 
+from PIL import Image
 import pytest
 from playwright.sync_api import Error as BrowserError, sync_playwright
 
@@ -39,7 +41,7 @@ def browser():
 @pytest.mark.parametrize(
     'stage',
     ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W6-platform-only', 'W6-cloud',
-     'W7', 'W7-platform', 'W8', 'platform-grid', None),
+     'W6-preview', 'W7', 'W7-platform', 'W8', 'platform-grid', None),
 )
 def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch):
     profile_path = Path(__file__).resolve().parents[1] / 'config' / 'wyscout.example.json'
@@ -59,6 +61,9 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
               throw new Error('private-exception-value');
             </script>
             <script src='https://cdn.example.test/private-script-value.js'></script>'''),
+        'W6-preview': ('/home', '''<header>Unknown screen</header>
+            <input value="private-form-value"
+              style="position:absolute;left:20px;top:50px;width:100px;height:36px;background:#fff">'''),
         'W7': ('/home', HOME),
         'W7-platform': ('/home', PLATFORM),
         'W8': ('/home', HOME.replace('<!--entry-->', ENTRY.replace('.hidden=false', '.hidden=true'))),
@@ -94,7 +99,12 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         context.route('**/*', serve)
         page = context.new_page()
         page.set_default_timeout(1200)
-        adapter = WyscoutAdapter(page, profile, 'synthetic-user@example.test', 'synthetic-test-only')
+        previews = []
+        opted_in = stage in ('W6-preview', 'W6-identity', 'W8', None)
+        adapter = WyscoutAdapter(page, profile, 'synthetic-user@example.test', 'synthetic-test-only',
+                                 on_w6_preview=previews.append if opted_in else None)
+        if not opted_in:
+            monkeypatch.setattr(adapter, '_capture_w6_preview', lambda: pytest.fail('Capture without opt-in'))
         wait = adapter._wait_for_login_step
         monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices: wait(choices, timeout=1.2))
         if stage in failures or stage in ('W1', 'W6-identity', 'W6-frame'):
@@ -119,6 +129,16 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
                 assert 'API/Hudl/Wyscout HTTP 403 ×1' in message
                 assert 'Przerwane żądania: skrypty/pozostałe ×1' in message
                 assert 'Błędy JavaScript: 1.' in message
+            if stage == 'W6-preview':
+                assert len(previews) == 1
+                with Image.open(BytesIO(previews[0])) as screenshot:
+                    assert screenshot.format == 'JPEG'
+                    assert all(25 <= channel <= 45 for channel in screenshot.getpixel((72, 68)))
+            elif stage == 'W6-identity':
+                assert previews == [None]
+            else:
+                assert not previews
         else:
             adapter.sign_in()
             assert adapter._visible('advanced_ready')
+            assert not previews

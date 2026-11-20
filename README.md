@@ -42,6 +42,8 @@ Po zapisaniu sekretów otwórz aplikację i wpisz hasło panelu. Sesja wygasa po
 
 Jeżeli test zwróci błąd, przekaż wyłącznie treść komunikatu z kodem `W1`–`W8`. Kod opisuje etap, na którym test się zatrzymał. Raport `SC-W6-1` pokazuje kategorię końcowego ekranu, stan dokumentu, które ze znanych elementów są widoczne oraz zagregowane błędy przeglądarki i sieci po kliknięciu Continue. Nie zawiera treści strony, adresów, zrzutów ani danych konta. HTTP 200 dokumentu nie potwierdza poprawności hasła ani załadowania całego interfejsu. Nie przesyłaj danych logowania, ciasteczek ani adresów przekierowań.
 
+W **Pobieranie → Prywatny podgląd W6** uprawniony użytkownik może zaznaczyć opcję podglądu przed uruchomieniem testu. Obraz powstaje tylko przy `W6` na stronie `wyscout.hudl.com`, bez rozpoznanego formularza logowania. Pola formularzy są zasłonięte. Obraz trafia bezpośrednio do bieżącej sesji panelu: bez pliku na dysku i bez publicznego linku. **Nie udostępniaj obrazu** — może nadal zawierać dane konta. Do dalszej diagnostyki wystarczy nagłówek lub treść komunikatu bez danych osobowych. **Ukryj podgląd** usuwa obraz z panelu. Podgląd jest dostępny tylko w sprawdzonej wersji Streamlit, przypiętej w zależnościach.
+
 ## Profil interfejsu Wyscout
 
 1. Skopiuj `config/wyscout.example.json` do `config/wyscout.json` lub wskaż istniejący profil przez `WYSCOUT_ADAPTER_CONFIG`. `null` oznacza **brak potwierdzonego selektora**, a nie dowolnie odgadniętą wartość.

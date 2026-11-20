@@ -19,7 +19,8 @@ def test_connection_uses_bundled_template_without_fetching_leagues(tmp_path, mon
     calls = []
 
     @contextmanager
-    def sign_in_only(*_, profile):
+    def sign_in_only(*_, profile, on_w6_preview):
+        assert on_w6_preview is None
         calls.append(profile)
         yield object()  # The probe must not call competitions().
 

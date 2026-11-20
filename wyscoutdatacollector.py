@@ -171,6 +171,7 @@ def manager(store):
         return
     from wyscout import jobs
     from wyscout.login_diagnostics import DIAGNOSTICS_VERSION
+    from wyscout.private_preview import PREVIEW_STREAMLIT_VERSION, preview_markup
     from wyscout.wyscout_adapter import load_profile
 
     st.caption(f'Diagnostyka połączenia: {DIAGNOSTICS_VERSION}')
@@ -183,10 +184,31 @@ def manager(store):
     if profile is None:
         st.info('Brak gotowego profilu eksportu Wyscout. Bez ustawienia WYSCOUT_ADAPTER_CONFIG test użyje dołączonego szablonu; eksport wymaga uzupełnionego profilu.')
     is_running = jobs.running(store)
+    preview_supported = st.__version__ == PREVIEW_STREAMLIT_VERSION
+    with st.expander('Prywatny podgląd W6'):
+        preview_requested = st.checkbox(
+            'Pokaż stronę Wyscout, jeśli test zakończy się W6',
+            disabled=not preview_supported or bool(missing) or is_running,
+        )
+        st.caption('Podgląd pojawi się tylko w tej sesji i nie zapisze się na dysku. '
+                   'Może zawierać dane konta: nie udostępniaj obrazu.')
+        if not preview_supported:
+            st.caption('Podgląd jest niedostępny w tej wersji Streamlit. Zwykły test nadal działa.')
     if st.button('Test Wyscout Connection', disabled=bool(missing) or is_running):
+        previews = []
         with st.spinner('Sprawdzanie logowania i otwarcia Advanced Search…'):
-            if errors(lambda: jobs.probe(store, creds)):
+            on_preview = previews.append if preview_supported and preview_requested else None
+            if errors(lambda: jobs.probe(store, creds, on_w6_preview=on_preview)):
                 st.success('Połączenie potwierdzone: logowanie i otwarcie Advanced Search. Test nie pobierał listy lig.')
+        if previews and panel_is_authorized(config_value('WYSCOUT_PANEL_PASSWORD')):
+            markup = preview_markup(previews[0])
+            if markup is not None:
+                st.caption('Prywatny podgląd W6. Zapisz dla siebie tylko nagłówek lub komunikat bez danych konta.')
+                st.html(markup)
+                if st.button('Ukryj podgląd'):
+                    st.rerun()
+            else:
+                st.caption('Nie pokazano podglądu: to nie był rozpoznany ekran Wyscout lub nie dało się bezpiecznie wykonać obrazu.')
     catalog_ready = profile is not None and profile.get('competition_list_complete') is True
     if st.button('Pobierz listę rozgrywek', disabled=bool(missing) or is_running or not catalog_ready):
         with st.spinner('Wczytywanie pełnej listy rozgrywek…'):

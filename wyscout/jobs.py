@@ -30,14 +30,14 @@ def running(store):
         return True
 
 
-def probe(store, creds):
+def probe(store, creds, *, on_w6_preview=None):
     if not all(creds):
         raise CollectorError('Dodaj WYSCOUT_USERNAME i WYSCOUT_PASSWORD w Secrets.')
     try:
         with _file_lock(store):
             store.remember('connection_ok', False)
             profile = load_profile(for_connection=True)
-            with open_adapter(*creds, profile=profile):
+            with open_adapter(*creds, profile=profile, on_w6_preview=on_w6_preview):
                 store.remember('connection_ok', True)
             return True
     except Timeout:

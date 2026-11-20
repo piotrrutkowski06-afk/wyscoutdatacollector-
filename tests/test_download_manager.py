@@ -3,6 +3,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 from wyscout import jobs, panel_auth
+from wyscout.settings import CollectorError
 
 
 def test_manager_can_test_connection_without_an_export_profile(tmp_path, monkeypatch):
@@ -14,7 +15,8 @@ def test_manager_can_test_connection_without_an_export_profile(tmp_path, monkeyp
     monkeypatch.setattr(panel_auth, 'panel_is_authorized', lambda _: True)
     called = []
 
-    def probe(_store, _creds):
+    def probe(_store, _creds, *, on_w6_preview):
+        assert on_w6_preview is None
         called.append(True)
         return True
 
@@ -38,3 +40,47 @@ def test_manager_can_test_connection_without_an_export_profile(tmp_path, monkeyp
     assert called == [True]
     assert any('Test nie pobierał listy lig' in message.value for message in app.success)
     assert not app.exception
+
+
+def test_preview_is_opt_in_and_is_not_replayed_in_another_session(tmp_path, monkeypatch):
+    monkeypatch.setenv('WYSCOUT_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('WYSCOUT_ADAPTER_CONFIG', str(tmp_path / 'missing.json'))
+    monkeypatch.setenv('WYSCOUT_USERNAME', 'test-user')
+    monkeypatch.setenv('WYSCOUT_PASSWORD', 'test-only')
+    monkeypatch.setattr(panel_auth, 'panel_access', lambda _: True)
+    monkeypatch.setattr(panel_auth, 'panel_is_authorized', lambda _: True)
+    captures = []
+    test_image = b'\xff\xd8\xff' + b'test-only-image'
+
+    def probe(_store, _creds, *, on_w6_preview):
+        captures.append(on_w6_preview is not None)
+        if on_w6_preview is not None:
+            on_w6_preview(test_image)
+        raise CollectorError('W6 · Przykład.')
+
+    monkeypatch.setattr(jobs, 'probe', probe)
+    entry = Path(__file__).resolve().parents[1] / 'app.py'
+    app = AppTest.from_file(entry, default_timeout=12).run()
+    app.sidebar.radio[0].set_value('Pobieranie').run()
+
+    def button(label):
+        return next(item for item in app.button if item.label == label)
+
+    button('Test Wyscout Connection').click().run()
+    assert not app.get('html')
+    app.checkbox[0].check().run()
+    button('Test Wyscout Connection').click().run()
+    assert captures == [False, True]
+    body = app.get('html')[0].proto.body
+    assert 'src="data:image/jpeg;base64,' in body and '/media/' not in body
+
+    other = AppTest.from_file(entry, default_timeout=12).run()
+    other.sidebar.radio[0].set_value('Pobieranie').run()
+    assert not other.get('html') and not other.checkbox[0].value
+    button('Ukryj podgląd').click().run()
+    assert not app.get('html') and not app.exception
+
+    monkeypatch.setattr(panel_auth, 'panel_access', lambda _: False)
+    public = AppTest.from_file(entry, default_timeout=12).run()
+    public.sidebar.radio[0].set_value('Pobieranie').run()
+    assert not public.checkbox and not public.get('html')

@@ -48,12 +48,13 @@ def connect_browser(playwright, *, headed=False):
 
 
 class WyscoutAdapter:
-    def __init__(self, page, profile, username, password, checkpoint=lambda: None, *, headed=False):
+    def __init__(self, page, profile, username, password, checkpoint=lambda: None, *, headed=False, on_w6_preview=None):
         self.page = page
         self.profile = profile
         self.username, self.password = username, password
         self.checkpoint = checkpoint
         self.headed = headed
+        self.on_w6_preview = on_w6_preview
         self.batch = None
         self.settings = None
         self.season = None
@@ -174,6 +175,28 @@ class WyscoutAdapter:
         parts.append('Widoczne elementy Wyscout: ' + (', '.join(seen) if seen else 'brak') + '.')
         return parts
 
+    def _capture_w6_preview(self):
+        def safe_page():
+            url = self.page.url
+            return (_allowed(url) and urlsplit(url).hostname == 'wyscout.hudl.com'
+                    and not any(self._visible(key) for key in ('username', 'password', 'mfa', 'captcha')))
+
+        try:
+            if not safe_page():
+                return None
+            masks = [frame.locator('input, textarea, select, [contenteditable]') for frame in self.page.frames]
+            jpeg = self.page.screenshot(type='jpeg', quality=78, mask=masks, mask_color='#222222', timeout=3500)
+            if safe_page():
+                return jpeg
+        except BrowserError:
+            pass
+        return None
+
+    def _w6_details(self, ready, diagnostics):
+        if self.on_w6_preview is not None:
+            self.on_w6_preview(self._capture_w6_preview())
+        return self._post_password_details(ready, diagnostics)
+
     def _submit_password(self, ready, challenge):
         diagnostics = PostPasswordDiagnostics(self.page, _allowed)
         with diagnostics.observe():
@@ -183,7 +206,7 @@ class WyscoutAdapter:
                 self.loc('login_submit').click()
             with self._login_stage(
                 'W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.',
-                details=lambda: self._post_password_details(ready, diagnostics),
+                details=lambda: self._w6_details(ready, diagnostics),
             ):
                 return self._wait_for_login_step(challenge + ready)
 
@@ -401,7 +424,7 @@ class WyscoutAdapter:
 
 
 @contextmanager
-def open_adapter(username, password, checkpoint=lambda: None, *, profile=None):
+def open_adapter(username, password, checkpoint=lambda: None, *, profile=None, on_w6_preview=None):
     if profile is None:
         profile = load_profile()
     headed = os.getenv('WYSCOUT_HEADED') == '1'
@@ -415,7 +438,8 @@ def open_adapter(username, password, checkpoint=lambda: None, *, profile=None):
             page = context.new_page()
             page.set_default_timeout(12_000)
             page.set_default_navigation_timeout(35_000)
-            adapter = WyscoutAdapter(page, profile, username, password, checkpoint, headed=headed)
+            adapter = WyscoutAdapter(page, profile, username, password, checkpoint,
+                                     headed=headed, on_w6_preview=on_w6_preview)
             adapter.sign_in()
             yield adapter
         finally:
