@@ -9,7 +9,7 @@ import shutil
 import time
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error as BrowserError, sync_playwright
+from playwright.sync_api import Error as BrowserError, TimeoutError as BrowserTimeout, sync_playwright
 
 from .settings import ROOT, CollectorError, SignInRequired, adapter_file
 
@@ -100,56 +100,82 @@ class WyscoutAdapter:
                 if self._visible(key):
                     return key
             self.page.wait_for_timeout(250)
-        raise CollectorError('Logowanie nie zostało potwierdzone. Sprawdź profil, dane logowania lub dodatkową autoryzację.')
+        raise BrowserTimeout('Nie rozpoznano oczekiwanego ekranu.')
+
+    @contextmanager
+    def _login_stage(self, message):
+        self.checkpoint()
+        try:
+            yield
+        except BrowserError:
+            # Playwright errors can contain the login URL or values from the form.
+            raise CollectorError(message) from None
 
     def sign_in(self):
-        with self.step('Logowanie do Wyscout'):
-            ready_steps = ('advanced_ready', 'signed_in', 'app_switcher')
-            target = self.profile.get('login_url', LOGIN_URL)
-            if not _allowed(target):
-                raise CollectorError('Adres logowania musi należeć do Hudl lub Wyscout i używać HTTPS.')
+        ready = ('advanced_ready', 'signed_in', 'app_switcher')
+        challenge = ('mfa', 'captcha', 'login_error')
+        form = ('username', 'password')
+        target = self.profile.get('login_url', LOGIN_URL)
+        if not _allowed(target):
+            raise CollectorError('Adres logowania musi należeć do Hudl lub Wyscout i używać HTTPS.')
+        with self._login_stage('W1 · Nie otwarto strony logowania Wyscout.'):
             self.page.goto(target, wait_until='domcontentloaded')
-            phase = self._wait_for_login_step(ready_steps + ('login_start', 'username', 'password', 'mfa', 'captcha'))
+        with self._login_stage('W2 · Strona się otworzyła, ale nie rozpoznano formularza Hudl.'):
+            phase = self._wait_for_login_step(challenge + ready + ('login_start',) + form)
             if phase == 'login_start':
                 self._official_origin()
                 self.loc('login_start').click()
-                phase = self._wait_for_login_step(ready_steps + ('username', 'password', 'mfa', 'captcha'))
-            if phase == 'username':
-                self._official_origin()
-                if not self.username or not self.password:
-                    raise CollectorError('Brak WYSCOUT_USERNAME lub WYSCOUT_PASSWORD w Secrets.')
+                phase = self._wait_for_login_step(challenge + ready + form)
+        if phase == 'username':
+            self._official_origin()
+            if not self.username or not self.password:
+                raise CollectorError('Brak WYSCOUT_USERNAME lub WYSCOUT_PASSWORD w Secrets.')
+            with self._login_stage('W3 · Nie udało się użyć pola e-mail lub przycisku Continue.'):
                 self.loc('username').fill(self.username)
-                if self._visible('username_next'):
+                phase = self._wait_for_login_step(challenge + ('password', 'username_next'))
+                if phase == 'username_next':
+                    self._official_origin()
                     self.loc('username_next').click()
-                    phase = self._wait_for_login_step(('password', 'mfa', 'captcha', 'login_error'))
-                else:
-                    phase = 'password'
-            if phase == 'password':
-                self._official_origin()
-                if not self.password:
-                    raise CollectorError('Brak WYSCOUT_PASSWORD w Secrets.')
+            if phase == 'username_next':
+                with self._login_stage('W4 · Po Continue na ekranie e-maila nie rozpoznano pola hasła.'):
+                    phase = self._wait_for_login_step(challenge + ('password',))
+        if phase == 'password':
+            self._official_origin()
+            if not self.password:
+                raise CollectorError('Brak WYSCOUT_PASSWORD w Secrets.')
+            with self._login_stage('W5 · Nie udało się użyć pola hasła lub wysłać formularza.'):
                 self.loc('password').fill(self.password)
                 self._official_origin()
                 self.loc('login_submit').click()
-                phase = self._wait_for_login_step(ready_steps + ('mfa', 'captcha', 'login_error'))
+            with self._login_stage('W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.'):
+                phase = self._wait_for_login_step(challenge + ready)
+        if phase == 'login_error':
+            raise CollectorError('Hudl/Wyscout wyświetlił komunikat o błędzie logowania.')
+        if phase in ('mfa', 'captcha'):
+            if not self.headed:
+                raise CollectorError('Hudl/Wyscout wymaga ręcznego potwierdzenia. Dokończ je w trybie z widocznym oknem Chromium.')
+            with self._login_stage('Nie potwierdzono zakończenia ręcznej weryfikacji w Hudl/Wyscout.'):
+                phase = self._wait_for_login_step(('login_error',) + ready, timeout=240)
             if phase == 'login_error':
-                raise CollectorError('Hudl/Wyscout odrzucił logowanie.')
-            if phase in ('mfa', 'captcha'):
-                if not self.headed:
-                    raise CollectorError('Hudl/Wyscout wymaga ręcznego potwierdzenia. Dokończ je w trybie z widocznym oknem Chromium.')
-                self._wait_for_login_step(ready_steps, timeout=240)
+                raise CollectorError('Hudl/Wyscout wyświetlił komunikat o błędzie logowania.')
+        self._official_origin()
+        self._open_advanced_search()
+
+    def _open_advanced_search(self):
+        if self._visible('advanced_ready'):
+            return
+        with self._login_stage('W7 · Rozpoznano zalogowany widok, ale nie udało się otworzyć kafelka Advanced Search.'):
+            entry = self.loc('advanced_search_entry', optional=True)
+            if entry is None:
+                entry = self.page.get_by_text('Advanced search', exact=False)
+            switcher = self.loc('app_switcher', optional=True)
+            if switcher is not None and not entry.is_visible():
+                switcher.click()
             self._official_origin()
-            if not self._visible('advanced_ready'):
-                entry = self.loc('advanced_search_entry', optional=True)
-                if entry is None:
-                    entry = self.page.get_by_text('Advanced search', exact=False)
-                switcher = self.loc('app_switcher', optional=True)
-                if switcher is not None and not entry.is_visible():
-                    switcher.click()
-                self._official_origin()
-                entry.click()
+            entry.click()
+        with self._login_stage('W8 · Kliknięto kafelek, ale nie rozpoznano otwartego widoku Advanced Search.'):
             self.loc('advanced_ready').wait_for(state='visible')
-            self._official_origin()
+        self._official_origin()
 
     def _guard(self):
         if not self._visible('advanced_ready'):
