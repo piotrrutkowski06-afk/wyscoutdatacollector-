@@ -22,6 +22,7 @@ HOME = """<a class='gears-button-inner' data='{"command":"switcher_apps"}'
     <section id='search' hidden><label>Timeframe</label><label>Competitions scope</label></section>"""
 ENTRY = """<div class='drawer-single-app' command='loadApp' title='Advanced Search'
     onclick='document.querySelector("#search").hidden=false'>Advanced Search</div>"""
+PLATFORM = '<header>Platform</header><nav><button>Main countries</button><button>International Competitions</button></nav>'
 
 
 @pytest.fixture(scope='module')
@@ -35,7 +36,11 @@ def browser():
             yield instance
 
 
-@pytest.mark.parametrize('stage', ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W7', 'W8', None))
+@pytest.mark.parametrize(
+    'stage',
+    ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W6-platform-only',
+     'W7', 'W7-platform', 'W8', 'platform-grid', None),
+)
 def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch):
     profile_path = Path(__file__).resolve().parents[1] / 'config' / 'wyscout.example.json'
     profile = json.loads(profile_path.read_text(encoding='utf-8'))
@@ -47,12 +52,16 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         'W4': ('/password', ''),
         'W5': ('/password', PASSWORD.replace("name='Continue'", "name='Wrong'")),
         'W6': ('/home', ''),
+        'W6-platform-only': ('/home', '<header>Platform</header>'),
         'W7': ('/home', HOME),
+        'W7-platform': ('/home', PLATFORM),
         'W8': ('/home', HOME.replace('<!--entry-->', ENTRY.replace('.hidden=false', '.hidden=true'))),
     }
     if stage in failures:
         path, content = failures[stage]
         pages[path] = content
+    if stage == 'platform-grid':
+        pages['/home'] = PLATFORM + pages['/home'].replace(' data=\'{"command":"switcher_apps"}\'', '')
     destinations = {origin + path: content for path, content in pages.items()}
     if stage == 'W6-identity':
         redirect = 'https://identity.hudl.com/result?state=redact-this-test-value'
@@ -76,7 +85,7 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         adapter = WyscoutAdapter(page, profile, 'synthetic-user@example.test', 'synthetic-test-only')
         wait = adapter._wait_for_login_step
         monkeypatch.setattr(adapter, '_wait_for_login_step', lambda choices: wait(choices, timeout=1.2))
-        if stage:
+        if stage in failures or stage in ('W1', 'W6-identity', 'W6-frame'):
             with pytest.raises(CollectorError, match=f"^{stage.split('-')[0]} · ") as error:
                 adapter.sign_in()
             message = str(error.value)

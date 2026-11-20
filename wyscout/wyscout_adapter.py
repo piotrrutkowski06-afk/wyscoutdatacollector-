@@ -223,9 +223,14 @@ class WyscoutAdapter:
             entry = self.loc('advanced_search_entry', optional=True)
             if entry is None:
                 entry = self.page.get_by_text('Advanced search', exact=False)
-            switcher = self.loc('app_switcher', optional=True)
-            if switcher is not None and not entry.is_visible():
-                switcher.click()
+            if not entry.is_visible():
+                switcher = self.loc('app_switcher', optional=True)
+                if not self._visible('app_switcher') and self._visible('signed_in'):
+                    fallback = self.loc('app_switcher_fallback', optional=True)
+                    if fallback is not None:
+                        switcher = fallback
+                if switcher is not None:
+                    switcher.click()
             self._official_origin()
             entry.click()
         with self._login_stage('W8 · Kliknięto kafelek, ale nie rozpoznano otwartego widoku Advanced Search.'):
