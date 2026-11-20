@@ -38,7 +38,7 @@ def browser():
 
 @pytest.mark.parametrize(
     'stage',
-    ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W6-platform-only',
+    ('W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W6-identity', 'W6-frame', 'W6-platform-only', 'W6-cloud',
      'W7', 'W7-platform', 'W8', 'platform-grid', None),
 )
 def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch):
@@ -53,6 +53,12 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         'W5': ('/password', PASSWORD.replace("name='Continue'", "name='Wrong'")),
         'W6': ('/home', ''),
         'W6-platform-only': ('/home', '<header>Platform</header>'),
+        'W6-cloud': ('/home', '''<header>Platform</header><p>private-page-value</p>
+            <script>
+              fetch('/account-data?state=private-request-value');
+              throw new Error('private-exception-value');
+            </script>
+            <script src='https://cdn.example.test/private-script-value.js'></script>'''),
         'W7': ('/home', HOME),
         'W7-platform': ('/home', PLATFORM),
         'W8': ('/home', HOME.replace('<!--entry-->', ENTRY.replace('.hidden=false', '.hidden=true'))),
@@ -63,6 +69,8 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
     if stage == 'platform-grid':
         pages['/home'] = PLATFORM + pages['/home'].replace(' data=\'{"command":"switcher_apps"}\'', '')
     destinations = {origin + path: content for path, content in pages.items()}
+    if stage == 'W6-cloud':
+        destinations[origin + '/account-data?state=private-request-value'] = 'private-response-value'
     if stage == 'W6-identity':
         redirect = 'https://identity.hudl.com/result?state=redact-this-test-value'
         destinations[origin + '/password'] = PASSWORD.replace('/home', redirect)
@@ -75,7 +83,11 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
         if stage == 'W1' or route.request.url not in destinations:
             route.abort()
         else:
-            status = 403 if stage == 'W6' and route.request.url == origin + '/home' else 200
+            denied = (
+                (stage == 'W6' and route.request.url == origin + '/home')
+                or (stage == 'W6-cloud' and '/account-data?' in route.request.url)
+            )
+            status = 403 if denied else 200
             route.fulfill(status=status, content_type='text/html', body=destinations[route.request.url])
 
     with browser.new_context() as context:
@@ -89,7 +101,9 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
             with pytest.raises(CollectorError, match=f"^{stage.split('-')[0]} · ") as error:
                 adapter.sign_in()
             message = str(error.value)
-            assert all(text not in message for text in ('synthetic-', 'https://', 'Call log', 'redact-this-test-value'))
+            assert all(text not in message for text in (
+                'synthetic-', 'https://', 'Call log', 'redact-this-test-value', 'private-',
+            ))
             if stage == 'W6':
                 # Chromium may replace an empty 403 response with its own error document.
                 assert 'HTTP 403.' in message
@@ -98,6 +112,13 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
             if stage == 'W6-frame':
                 assert 'Ekran: aplikacja Wyscout.' in message
                 assert 'Znacznik Wyscout widoczny w osadzonym widoku.' in message
+            if stage == 'W6-cloud':
+                assert 'Raport SC-W6-1.' in message
+                assert 'Stan dokumentu: complete.' in message and 'Widoczny tekst strony: tak.' in message
+                assert 'Widoczne elementy Wyscout: Platform.' in message
+                assert 'API/Hudl/Wyscout HTTP 403 ×1' in message
+                assert 'Przerwane żądania: skrypty/pozostałe ×1' in message
+                assert 'Błędy JavaScript: 1.' in message
         else:
             adapter.sign_in()
             assert adapter._visible('advanced_ready')

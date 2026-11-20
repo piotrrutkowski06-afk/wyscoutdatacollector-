@@ -26,6 +26,7 @@ def test_manager_can_test_connection_without_an_export_profile(tmp_path, monkeyp
         return next(item for item in app.button if item.label == label)
 
     assert not app.exception
+    assert any('Diagnostyka połączenia: SC-W6-1' in item.value for item in app.caption)
     assert button('Test Wyscout Connection').disabled
     assert any('WYSCOUT_PASSWORD' in message.value for message in app.warning)
     monkeypatch.setenv('WYSCOUT_PASSWORD', 'test-only')

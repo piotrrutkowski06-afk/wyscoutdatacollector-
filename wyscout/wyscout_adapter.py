@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Error as BrowserError, TimeoutError as BrowserTimeout, sync_playwright
 
+from .login_diagnostics import DIAGNOSTICS_VERSION, PostPasswordDiagnostics
 from .settings import ROOT, CollectorError, SignInRequired, adapter_file
 
 LOGIN_URL = 'https://wyscout.hudl.com/app/'
@@ -116,7 +117,7 @@ class WyscoutAdapter:
                     pass
             raise CollectorError(message) from None
 
-    def _post_password_details(self, ready, document_status):
+    def _post_password_details(self, ready, diagnostics):
         url = self.page.url
         hostname = urlsplit(url).hostname
         if hostname == 'identity.hudl.com' and _allowed(url):
@@ -127,9 +128,9 @@ class WyscoutAdapter:
             screen = 'inna strona Hudl/Wyscout'
         else:
             screen = 'poza rozpoznaną domeną Hudl/Wyscout'
-        parts = [f'Ekran: {screen}.']
-        if document_status is not None:
-            parts.append(f'Z ostatniego otwarcia strony: HTTP {document_status}.')
+        parts = [f'Raport {DIAGNOSTICS_VERSION}. Ekran: {screen}.']
+        if diagnostics.document_status is not None:
+            parts.append(f'Z ostatniego otwarcia strony: HTTP {diagnostics.document_status}.')
         if _allowed(url):
             if self._visible('password'):
                 parts.append('Pole hasła nadal widoczne.')
@@ -137,39 +138,54 @@ class WyscoutAdapter:
                 parts.append('Pole e-mail ponownie widoczne.')
             else:
                 parts.append('Nie widać rozpoznanych pól logowania.')
+            parts.extend(self._render_summary())
             if any(
                 frame.parent_frame is not None and _allowed(frame.url)
                 and any(self._visible(key, scope=frame) for key in ready)
                 for frame in self.page.frames
             ):
                 parts.append('Znacznik Wyscout widoczny w osadzonym widoku.')
+        parts.append(diagnostics.summary())
         return ' '.join(parts)
 
-    def _submit_password(self, ready, challenge):
-        document_status = None
-
-        def record_document_status(response):
-            nonlocal document_status
-            if response.request.resource_type == 'document':
-                try:
-                    if response.frame == self.page.main_frame:
-                        document_status = response.status
-                except BrowserError:
-                    pass
-
-        self.page.on('response', record_document_status)
+    def _render_summary(self):
+        parts = []
         try:
+            state, text_visible = self.page.locator('html').evaluate(
+                '(html) => [html.ownerDocument.readyState, Boolean(html.ownerDocument.body?.innerText.trim())]',
+                timeout=1000,
+            )
+            if state in ('loading', 'interactive', 'complete'):
+                parts.append(f'Stan dokumentu: {state}.')
+            parts.append('Widoczny tekst strony: ' + ('tak.' if text_visible else 'nie.'))
+        except BrowserError:
+            parts.append('Stan dokumentu: nieodczytany.')
+
+        labels = ('Platform', 'Main countries', 'International Competitions', 'Competitions scope', 'Timeframe')
+        seen = []
+        for label in labels:
+            try:
+                if self.page.get_by_text(label, exact=True).filter(visible=True).count():
+                    seen.append(label)
+            except BrowserError:
+                pass
+        if self._visible('app_switcher_fallback'):
+            seen.append('ikona z kafelkami')
+        parts.append('Widoczne elementy Wyscout: ' + (', '.join(seen) if seen else 'brak') + '.')
+        return parts
+
+    def _submit_password(self, ready, challenge):
+        diagnostics = PostPasswordDiagnostics(self.page, _allowed)
+        with diagnostics.observe():
             with self._login_stage('W5 · Nie udało się użyć pola hasła lub wysłać formularza.'):
                 self.loc('password').fill(self.password)
                 self._official_origin()
                 self.loc('login_submit').click()
             with self._login_stage(
                 'W6 · Po wysłaniu formularza hasła nie rozpoznano strony głównej ani wyniku logowania.',
-                details=lambda: self._post_password_details(ready, document_status),
+                details=lambda: self._post_password_details(ready, diagnostics),
             ):
                 return self._wait_for_login_step(challenge + ready)
-        finally:
-            self.page.remove_listener('response', record_document_status)
 
     def sign_in(self):
         ready = ('advanced_ready', 'signed_in', 'app_switcher')

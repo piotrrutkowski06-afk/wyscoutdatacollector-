@@ -170,8 +170,10 @@ def manager(store):
                 'Bez hasła możesz użyć importu istniejących plików.')
         return
     from wyscout import jobs
+    from wyscout.login_diagnostics import DIAGNOSTICS_VERSION
     from wyscout.wyscout_adapter import load_profile
 
+    st.caption(f'Diagnostyka połączenia: {DIAGNOSTICS_VERSION}')
     keys = ('WYSCOUT_USERNAME', 'WYSCOUT_PASSWORD')
     creds = tuple(config_value(key) for key in keys)
     missing = [key for key, value in zip(keys, creds) if not value or not value.strip()]
