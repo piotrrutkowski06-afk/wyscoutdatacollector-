@@ -15,7 +15,12 @@ from .login_diagnostics import DIAGNOSTICS_VERSION, PostPasswordDiagnostics
 from .settings import ROOT, CollectorError, SignInRequired, adapter_file
 
 LOGIN_URL = 'https://wyscout.hudl.com/app/'
-MULTIPLE_ACCESS = 'body:has(:text-is("Multiple access attempt"):visible)'
+MULTIPLE_ACCESS = re.compile(r'^multiple\s+access\s+attempt$', re.I)
+SESSION_WARNING = re.compile(
+    r'(?:your\s+wyscout\s+account\s+is\s+already\s+in\s+use\s+on\s+another\s+device'
+    r'|all\s+other\s+open\s+sessions\s+will\s+be\s+closed)', re.I,
+)
+FORCE_LOGIN = re.compile(r'^force\s+login$', re.I)
 RESULT_RANGE = re.compile(r'^\s*\d[\d, .\u00a0\u202f]*\s*[-–]\s*\d[\d, .\u00a0\u202f]*\s+of\s+(\d[\d, .\u00a0\u202f]*)\s*$', re.I)
 
 
@@ -101,16 +106,46 @@ class WyscoutAdapter:
         if not _allowed(self.page.url):
             raise CollectorError('Przekierowanie poza domeny Hudl i Wyscout. Zatrzymano logowanie.')
 
+    @staticmethod
+    def _force_button(frame):
+        return frame.locator('button').filter(has_text=FORCE_LOGIN, visible=True)
+
+    def _conflict_frames(self):
+        matches = []
+        for frame in self.page.frames:
+            try:
+                if not (frame.get_by_text(MULTIPLE_ACCESS).filter(visible=True).count()
+                        or (frame.get_by_text(SESSION_WARNING).filter(visible=True).count()
+                            and self._force_button(frame).count())):
+                    continue
+                parent_check = frame
+                while parent_check.parent_frame is not None and parent_check.frame_element().is_visible():
+                    parent_check = parent_check.parent_frame
+                if parent_check == self.page.main_frame:
+                    matches.append(frame)
+            except BrowserError:
+                # The conflict view may be removed during client-side navigation.
+                continue
+        return matches
+
+    def _trusted_conflict_frame(self, frame):
+        if not _wyscout_origin(self.page.url):
+            return False
+        if frame.url not in ('about:blank', 'about:srcdoc') and not _wyscout_origin(frame.url):
+            return False
+        # A sandboxed document can have an opaque origin despite a trusted URL.
+        return frame.evaluate('() => window.origin') == 'https://' + urlsplit(LOGIN_URL).hostname
+
     def _wait_for_login_step(self, choices, timeout=35, *, wait_for_conflict_to_clear=False):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.checkpoint()
-            if wait_for_conflict_to_clear and self.page.locator(MULTIPLE_ACCESS).is_visible():
+            if wait_for_conflict_to_clear and self._conflict_frames():
                 self.page.wait_for_timeout(250)
                 continue
             for key in choices:
                 if key == 'multiple_access':
-                    if self.page.locator(MULTIPLE_ACCESS).is_visible():
+                    if self._conflict_frames():
                         return key
                 elif self._visible(key):
                     return key
@@ -153,6 +188,14 @@ class WyscoutAdapter:
             else:
                 parts.append('Nie widać rozpoznanych pól logowania.')
             parts.extend(self._render_summary())
+            conflict_frames = self._conflict_frames()
+            if conflict_frames:
+                location = 'w osadzonym widoku' if all(frame.parent_frame is not None for frame in conflict_frames) else 'na stronie'
+                parts.append(f'Komunikat o konflikcie sesji widoczny {location}.')
+            elif any(self._force_button(frame).count() for frame in self.page.frames if _allowed(frame.url)):
+                parts.append('Widać „Force login”, ale nie rozpoznano komunikatu o konflikcie sesji.')
+            if any(frame.parent_frame is not None for frame in self.page.frames):
+                parts.append('Strona zawiera osadzone widoki.')
             if any(
                 frame.parent_frame is not None and _allowed(frame.url)
                 and any(self._visible(key, scope=frame) for key in ready)
@@ -223,17 +266,27 @@ class WyscoutAdapter:
                 return self._wait_for_login_step(outcomes)
 
     def _confirm_multiple_access(self):
-        if not _wyscout_origin(self.page.url):
-            raise CollectorError('W9 · Nie potwierdzono adresu ekranu „Multiple access attempt”. Nie kliknięto „Force login”.')
-        if not self.allow_force_login:
-            raise CollectorError('W9 · Wyscout: „Multiple access attempt”. Zamknij inne sesje lub zaznacz '
-                                 '„Zezwól na Force login w następnej operacji” i spróbuj ponownie. '
-                                 'Force login zamyka wszystkie pozostałe sesje tego konta.')
         with self._login_stage('W9 · Nie udało się użyć przycisku „Force login”.'):
-            button = self.page.locator(MULTIPLE_ACCESS).get_by_role('button', name='Force login', exact=True)
-            if button.filter(visible=True).count() != 1:
+            frames = self._conflict_frames()
+            if len(frames) != 1:
+                raise CollectorError('W9 · Nie znaleziono dokładnie jednego widocznego ekranu konfliktu. Nie kliknięto „Force login”.')
+            frame = frames[0]
+            if not self._trusted_conflict_frame(frame):
+                raise CollectorError('W9 · Nie potwierdzono adresu ekranu „Multiple access attempt”. Nie kliknięto „Force login”.')
+            if not self.allow_force_login:
+                raise CollectorError('W9 · Wyscout: „Multiple access attempt”. Zamknij inne sesje lub zaznacz '
+                                     '„Zezwól na Force login w następnej operacji” i spróbuj ponownie. '
+                                     'Force login zamyka wszystkie pozostałe sesje tego konta.')
+            if any(self._visible(key, scope=frame) for key in ('mfa', 'captcha', 'login_error', 'username', 'password')):
+                raise CollectorError('W9 · Ekran konfliktu zawiera kontrolki logowania lub weryfikacji. Nie kliknięto „Force login”.')
+            button = self._force_button(frame)
+            if not button.count():
+                button.wait_for(state='visible', timeout=4_000)
+            if button.count() != 1:
                 raise CollectorError('W9 · Nie znaleziono dokładnie jednego widocznego przycisku „Force login”.')
-            button.filter(visible=True).click()
+            if self._conflict_frames() != [frame] or not self._trusted_conflict_frame(frame):
+                raise CollectorError('W9 · Ekran zmienił się przed kliknięciem. Nie kliknięto „Force login”.')
+            button.click()
 
     def sign_in(self):
         ready = ('advanced_ready', 'signed_in', 'app_switcher')

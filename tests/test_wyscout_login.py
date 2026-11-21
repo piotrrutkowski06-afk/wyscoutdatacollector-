@@ -1,4 +1,5 @@
 from io import BytesIO
+from html import escape
 import json
 from pathlib import Path
 
@@ -125,7 +126,7 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
                 assert 'Ekran: aplikacja Wyscout.' in message
                 assert 'Znacznik Wyscout widoczny w osadzonym widoku.' in message
             if stage == 'W6-cloud':
-                assert 'Raport SC-W6-2.' in message
+                assert 'Raport SC-W6-3.' in message
                 assert 'Stan dokumentu: complete.' in message and 'Widoczny tekst strony: tak.' in message
                 assert 'Widoczne elementy Wyscout: Platform.' in message
                 assert 'API/Hudl/Wyscout HTTP 403 ×1' in message
@@ -152,6 +153,15 @@ def test_connection_stages_with_no_external_requests(browser, stage, monkeypatch
     ('conflict', False, 0, 'zamknij inne sesje'),
     ('conflict', True, 1, None),
     ('conflict-with-home', True, 1, None),
+    ('split-heading', True, 1, None),
+    ('warning-and-button', True, 1, None),
+    ('embedded', False, 0, 'zamknij inne sesje'),
+    ('embedded', True, 1, None),
+    ('srcdoc', True, 1, None),
+    ('hidden-frame', True, 0, None),
+    ('sandboxed-frame', True, 0, 'nie potwierdzono adresu'),
+    ('foreign-frame', True, 0, 'nie potwierdzono adresu'),
+    ('duplicate-frame', True, 0, 'jednego widocznego ekranu konfliktu'),
     ('repeated', True, 1, 'nie ponowiono'),
     ('other-origin', True, 0, 'nie potwierdzono adresu'),
     ('two-buttons', True, 0, 'jednego widocznego przycisku'),
@@ -172,7 +182,22 @@ def test_force_login_is_confirmed_once_on_the_wyscout_conflict_screen(
         'two-buttons': CONFLICT + '<button>Force login</button>',
         'only-button': CONFLICT.replace('Multiple access attempt', 'Other screen'),
         'captcha': CONFLICT + '<div id="captcha">Complete verification</div>',
+        'split-heading': CONFLICT.replace('Multiple access attempt', '<span>Multiple</span> access&nbsp;<b>attempt</b>')
+                                 .replace('<button onclick', '<button aria-label="Continue" onclick'),
+        'warning-and-button': CONFLICT.replace('<h1>Multiple access attempt</h1>',
+                                              '<p>Your Wyscout Account is already in use on another device.</p>'),
     }.get(case, CONFLICT)
+    embedded = CONFLICT.replace('location.href', 'top.location.href')
+    if case in ('embedded', 'hidden-frame', 'duplicate-frame', 'sandboxed-frame', 'foreign-frame'):
+        url = 'https://identity.hudl.com/embedded' if case == 'foreign-frame' else origin + '/embedded'
+        attributes = {'hidden-frame': 'hidden', 'sandboxed-frame': 'sandbox="allow-scripts"'}.get(case, '')
+        iframe = f'<iframe {attributes} src="{url}"></iframe>'
+        destinations[url] = embedded
+        destinations[origin + '/home'] = (
+            home + iframe if case == 'hidden-frame' else iframe * 2 if case == 'duplicate-frame' else iframe
+        )
+    if case == 'srcdoc':
+        destinations[origin + '/home'] = f'<iframe srcdoc="{escape(embedded, quote=True)}"></iframe>'
     if case == 'repeated':
         destinations[origin + '/confirmed'] = PLATFORM + home + CONFLICT
     if case == 'other-origin':
@@ -205,6 +230,8 @@ def test_force_login_is_confirmed_once_on_the_wyscout_conflict_screen(
                 adapter.sign_in()
             assert error in str(caught.value).lower()
             assert len(previews) == int(case == 'only-button')
+            if case == 'only-button':
+                assert 'Widać „Force login”, ale nie rozpoznano komunikatu o konflikcie sesji.' in str(caught.value)
         else:
             adapter.sign_in()
             assert adapter._visible('advanced_ready') and not previews
